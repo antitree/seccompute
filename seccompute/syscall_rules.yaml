@@ -1,0 +1,612 @@
+# Seccomp Syscall Threat Rules
+# Each entry maps a syscall name to its tier, category, and threat data.
+# Tier budgets: T1=60, T2=30, T3=10. Per-syscall weight = budget / count(tier).
+#
+# Categories:
+#   kernel_module      - Loading/unloading kernel modules
+#   process_inspection - Tracing, debugging, cross-process memory access
+#   namespace_escape   - Namespace manipulation, container boundary crossing
+#   filesystem_escape  - Mount/unmount, filesystem manipulation
+#   io_subsystem       - io_uring and direct I/O port access
+#   kernel_keyring     - Kernel key management subsystem
+#   system_control     - System-wide state changes (reboot, hostname, time)
+#   memory_management  - NUMA, memory migration, swap
+#   device_access      - Direct hardware I/O port access
+
+# ============================================================================
+# TIER 1 (budget: 60) - Catastrophic: kernel code exec, container escape
+# ============================================================================
+
+bpf:
+  tier: 1
+  category: "process_inspection"
+  description: "Load and interact with eBPF programs. Grants near-arbitrary kernel code execution."
+  threats:
+    - id: "CVE-2021-3490"
+      description: "eBPF ALU32 bounds tracking for bitwise ops OOB write, leading to LPE"
+      date_added: "2025-01-15"
+    - id: "CVE-2023-2163"
+      description: "eBPF verifier incorrect pruning leading to unsafe program loading"
+      date_added: "2025-01-15"
+    - id: "TECHNIQUE-bpf-kernel-exec"
+      description: "Load eBPF to read/write arbitrary kernel memory"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. eBPF verifier bypasses are a recurring class of kernel LPEs."
+
+ptrace:
+  tier: 1
+  category: "process_inspection"
+  description: "Trace/control another process. Container escape vector via host PID injection."
+  threats:
+    - id: "CVE-2019-13272"
+      description: "Privilege escalation via ptrace_link due to incorrect credentials check"
+      date_added: "2025-01-15"
+    - id: "TECHNIQUE-container-escape-ptrace"
+      description: "Inject code into host process from container via ptrace attach"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. No safe conditional use in containers."
+
+kexec_load:
+  tier: 1
+  category: "kernel_module"
+  description: "Load a new kernel for later execution. Complete host takeover."
+  threats:
+    - id: "TECHNIQUE-kexec-rootkit"
+      description: "Load a rootkitted kernel image, bypassing all security controls on reboot"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. Equivalent to arbitrary kernel code execution."
+
+kexec_file_load:
+  tier: 1
+  category: "kernel_module"
+  description: "Load a new kernel from a file descriptor. Same risk as kexec_load."
+  threats:
+    - id: "TECHNIQUE-kexec-rootkit"
+      description: "Load a rootkitted kernel image from an fd"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. File-based variant of kexec_load."
+
+init_module:
+  tier: 1
+  category: "kernel_module"
+  description: "Load a kernel module from a buffer. Direct kernel code execution."
+  threats:
+    - id: "TECHNIQUE-lkm-rootkit"
+      description: "Load malicious kernel module for persistent rootkit"
+      date_added: "2025-01-15"
+    - id: "CVE-2017-0861"
+      description: "Use-after-free in ALSA via crafted kernel module interaction"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. Kernel module loading is unrestricted code execution."
+
+finit_module:
+  tier: 1
+  category: "kernel_module"
+  description: "Load a kernel module from a file descriptor. Same risk as init_module."
+  threats:
+    - id: "TECHNIQUE-lkm-rootkit"
+      description: "Load malicious kernel module from fd for persistent rootkit"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. File-descriptor variant of init_module."
+
+delete_module:
+  tier: 1
+  category: "kernel_module"
+  description: "Unload a kernel module. Can destabilize kernel or disable security modules."
+  threats:
+    - id: "TECHNIQUE-disable-lsm"
+      description: "Unload security modules (AppArmor, SELinux) to disable MAC"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. Removing security modules undermines all container isolation."
+
+process_vm_readv:
+  tier: 1
+  category: "process_inspection"
+  description: "Read memory of another process. Cross-process data exfiltration."
+  threats:
+    - id: "TECHNIQUE-cross-process-read"
+      description: "Read secrets (keys, tokens) from other process memory spaces"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. Bypasses process isolation boundaries."
+
+process_vm_writev:
+  tier: 1
+  category: "process_inspection"
+  description: "Write to memory of another process. Code injection into other processes."
+  threats:
+    - id: "TECHNIQUE-cross-process-inject"
+      description: "Inject shellcode into another process's address space"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Always tier 1. Direct code injection primitive."
+
+# ============================================================================
+# TIER 2 (budget: 30) - Serious: namespace/filesystem escape, kernel attack surface
+# ============================================================================
+
+io_uring_setup:
+  tier: 2
+  category: "io_subsystem"
+  description: "Set up io_uring submission/completion queues. Large kernel attack surface."
+  threats:
+    - id: "CVE-2023-2598"
+      description: "io_uring UAF in fixed file slot leading to LPE"
+      date_added: "2025-01-15"
+    - id: "CVE-2024-0582"
+      description: "io_uring page UAF via IORING_OP_MADVISE"
+      date_added: "2025-01-15"
+    - id: "TECHNIQUE-io-uring-escape"
+      description: "io_uring bypasses seccomp filters entirely for registered operations"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Massive kernel attack surface. Google/Chromium blocks entirely."
+
+io_uring_enter:
+  tier: 2
+  category: "io_subsystem"
+  description: "Submit and wait for io_uring operations. See io_uring_setup threats."
+  threats:
+    - id: "CVE-2023-2598"
+      description: "io_uring UAF in fixed file slot leading to LPE"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Requires io_uring_setup first; same threat class."
+
+io_uring_register:
+  tier: 2
+  category: "io_subsystem"
+  description: "Register resources with io_uring instance. See io_uring_setup threats."
+  threats:
+    - id: "CVE-2024-0582"
+      description: "io_uring page UAF via registered buffer operations"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Requires io_uring_setup first; same threat class."
+
+mount:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Mount a filesystem. Can remount host filesystems or overlay sensitive paths."
+  threats:
+    - id: "TECHNIQUE-mount-escape"
+      description: "Mount host filesystem (e.g., /proc, /sys) to escape container"
+      date_added: "2025-01-15"
+    - id: "CVE-2019-5736"
+      description: "runc container escape via /proc/self/exe (mount manipulation)"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Core filesystem escape primitive."
+
+umount:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Unmount a filesystem. Can remove security-critical mounts."
+  threats:
+    - id: "TECHNIQUE-unmount-masking"
+      description: "Unmount masking mounts to expose sensitive host paths"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Removing masking mounts exposes /proc/kcore, /proc/sysrq-trigger, etc."
+
+umount2:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Unmount with flags (lazy, force). Same risk as umount with more options."
+  threats:
+    - id: "TECHNIQUE-unmount-masking"
+      description: "Force-unmount masking mounts to expose host paths"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "MNT_FORCE and MNT_DETACH flags make unmounting harder to prevent."
+
+move_mount:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Move a mount from one location to another. New mount API escape vector."
+  threats:
+    - id: "TECHNIQUE-mount-escape"
+      description: "Relocate mounts to bypass container filesystem layout"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Part of new mount API (fsopen/fsmount/move_mount). Same risk class as mount."
+
+open_tree:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Open/clone a mount tree. Enables mount namespace manipulation."
+  threats:
+    - id: "TECHNIQUE-mount-namespace-clone"
+      description: "Clone mount trees across namespace boundaries"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Part of new mount API. Combined with move_mount, enables mount escapes."
+
+fsopen:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Open a filesystem context for configuration. New mount API entry point."
+  threats:
+    - id: "TECHNIQUE-new-mount-api"
+      description: "Configure and create filesystem mounts bypassing traditional mount()"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Entry point to new mount API. Requires fsmount/move_mount to complete mount."
+
+fsmount:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Create a mount from a filesystem context. New mount API mount creation."
+  threats:
+    - id: "TECHNIQUE-new-mount-api"
+      description: "Create mounts from fs context, bypassing traditional mount restrictions"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Part of new mount API chain: fsopen -> fsconfig -> fsmount -> move_mount."
+
+fsconfig:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Configure a filesystem context. New mount API configuration step."
+  threats:
+    - id: "CVE-2022-0185"
+      description: "Heap overflow in legacy_parse_param via fsconfig, leading to container escape"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "CVE-2022-0185 was a real-world container escape via this syscall."
+
+fspick:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Pick an existing mount for reconfiguration. New mount API reconfiguration."
+  threats:
+    - id: "TECHNIQUE-remount-reconfigure"
+      description: "Reconfigure existing mounts to change security properties"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Allows reconfiguring existing mounts (e.g., removing read-only flags)."
+
+setns:
+  tier: 2
+  category: "namespace_escape"
+  description: "Enter an existing namespace. Direct container escape if host ns accessible."
+  threats:
+    - id: "TECHNIQUE-ns-enter"
+      description: "Enter host PID/mount/network namespace from container"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Primary namespace escape primitive. Requires fd to target namespace."
+
+unshare:
+  tier: 2
+  category: "namespace_escape"
+  description: "Create new namespaces. Can create user namespace for privilege escalation."
+  threats:
+    - id: "CVE-2022-0185"
+      description: "User namespace creation + fsconfig heap overflow for container escape"
+      date_added: "2025-01-15"
+    - id: "TECHNIQUE-userns-escalation"
+      description: "Create user namespace to gain capabilities for further exploitation"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "User namespace creation is a prerequisite for many kernel LPE exploits."
+
+pivot_root:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Change the root filesystem. Can swap container root with host filesystem."
+  threats:
+    - id: "TECHNIQUE-pivot-root-escape"
+      description: "Pivot to host filesystem to escape container"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Combined with mount, allows complete filesystem escape."
+
+open_by_handle_at:
+  tier: 2
+  category: "filesystem_escape"
+  description: "Open file by persistent handle. Bypasses pathname-based access controls."
+  threats:
+    - id: "CVE-2015-1322"
+      description: "Container escape via open_by_handle_at brute-forcing file handles"
+      date_added: "2025-01-15"
+    - id: "TECHNIQUE-shocker"
+      description: "Shocker exploit: brute-force file handles to access host filesystem"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "The original Docker container escape (Shocker, 2014). Requires CAP_DAC_READ_SEARCH."
+
+keyctl:
+  tier: 2
+  category: "kernel_keyring"
+  description: "Manipulate kernel key management facility. Kernel attack surface."
+  threats:
+    - id: "CVE-2016-0728"
+      description: "Use-after-free in kernel keyring via keyctl, leading to LPE"
+      date_added: "2025-01-15"
+    - id: "CVE-2023-3317"
+      description: "UAF in kernel keyring during key revocation"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Kernel keyring has been a recurring source of UAF vulnerabilities."
+
+add_key:
+  tier: 2
+  category: "kernel_keyring"
+  description: "Add a key to the kernel keyring. Paired with keyctl for keyring attacks."
+  threats:
+    - id: "CVE-2016-0728"
+      description: "Kernel keyring UAF triggered via add_key + keyctl"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Entry point for keyring manipulation exploits."
+
+request_key:
+  tier: 2
+  category: "kernel_keyring"
+  description: "Request a key from the kernel keyring. Kernel attack surface."
+  threats:
+    - id: "CVE-2016-0728"
+      description: "Kernel keyring UAF triggered via request_key sequences"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Completes keyring attack surface with add_key and keyctl."
+
+perf_event_open:
+  tier: 2
+  category: "process_inspection"
+  description: "Open a performance monitoring counter. Large kernel attack surface."
+  threats:
+    - id: "CVE-2022-1729"
+      description: "Race condition in perf_event_open leading to LPE"
+      date_added: "2025-01-15"
+    - id: "CVE-2023-2002"
+      description: "perf_event capabilities check bypass"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Large kernel attack surface with recurring vulnerabilities."
+
+# ============================================================================
+# TIER 3 (budget: 10) - Elevated: contextual risk, information disclosure, DoS
+# ============================================================================
+
+clone:
+  tier: 3
+  category: "namespace_escape"
+  description: "Create a child process. Dangerous with CLONE_NEWUSER flag for user namespace creation."
+  threats:
+    - id: "TECHNIQUE-userns-via-clone"
+      description: "Create user namespace via CLONE_NEWUSER to gain capabilities"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Standard for process creation (fork). Dangerous only with namespace flags. Most runtimes arg-filter this."
+
+clone3:
+  tier: 3
+  category: "namespace_escape"
+  description: "Extended clone with struct. Same namespace risk as clone, newer API."
+  threats:
+    - id: "TECHNIQUE-userns-via-clone3"
+      description: "Create user namespace via clone3 struct clone_args"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Newer API for clone. Docker returns ENOSYS by default (without CAP_SYS_ADMIN)."
+
+chroot:
+  tier: 3
+  category: "filesystem_escape"
+  description: "Change root directory. Can escape chroot jails but limited in namespace context."
+  threats:
+    - id: "TECHNIQUE-chroot-escape"
+      description: "Classic chroot escape via relative path traversal after chroot"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Well-known escape technique but limited impact inside mount namespaces."
+
+iopl:
+  tier: 3
+  category: "device_access"
+  description: "Change I/O privilege level. Grants direct hardware port access."
+  threats:
+    - id: "TECHNIQUE-iopl-port-access"
+      description: "Set I/O privilege level to access hardware ports directly"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "x86-specific. Grants ring-0-like I/O access. Mitigated by virtualization in cloud."
+
+ioperm:
+  tier: 3
+  category: "device_access"
+  description: "Set port I/O permissions. Grants access to specific hardware ports."
+  threats:
+    - id: "TECHNIQUE-ioperm-port-access"
+      description: "Grant per-port I/O access for direct hardware manipulation"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "x86-specific. More granular than iopl. Same mitigation via virtualization."
+
+reboot:
+  tier: 3
+  category: "system_control"
+  description: "Reboot or halt the system. Host-wide denial of service."
+  threats:
+    - id: "TECHNIQUE-host-dos"
+      description: "Reboot/halt the host system from within a container"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Pure DoS impact. No data exfiltration or code execution."
+
+swapon:
+  tier: 3
+  category: "memory_management"
+  description: "Enable swap on a device. Can cause host memory pressure or data exposure."
+  threats:
+    - id: "TECHNIQUE-swap-abuse"
+      description: "Enable swap to file to leak sensitive memory contents to disk"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Requires block device access. Limited practical impact in containers."
+
+swapoff:
+  tier: 3
+  category: "memory_management"
+  description: "Disable swap. Can cause host OOM conditions."
+  threats:
+    - id: "TECHNIQUE-swap-dos"
+      description: "Disable swap to trigger OOM killer on the host"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "DoS vector. Requires CAP_SYS_ADMIN in practice."
+
+sethostname:
+  tier: 3
+  category: "system_control"
+  description: "Set the system hostname. Information disclosure risk, network confusion."
+  threats:
+    - id: "TECHNIQUE-hostname-spoof"
+      description: "Change hostname to confuse monitoring, logging, or service discovery"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Contained within UTS namespace when properly isolated."
+
+setdomainname:
+  tier: 3
+  category: "system_control"
+  description: "Set the NIS domain name. Similar risk profile to sethostname."
+  threats:
+    - id: "TECHNIQUE-domain-spoof"
+      description: "Change NIS domain to confuse network services"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Contained within UTS namespace when properly isolated."
+
+settimeofday:
+  tier: 3
+  category: "system_control"
+  description: "Set system time. Can break certificate validation and time-based security."
+  threats:
+    - id: "TECHNIQUE-time-manipulation"
+      description: "Set system time to bypass certificate expiry or TOTP windows"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Affects all containers on the host. Not namespaced."
+
+clock_settime:
+  tier: 3
+  category: "system_control"
+  description: "Set clock time. Same risk as settimeofday via clock_id interface."
+  threats:
+    - id: "TECHNIQUE-time-manipulation"
+      description: "Manipulate CLOCK_REALTIME to break time-dependent security"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Not namespaced. Affects host and all containers."
+
+vhangup:
+  tier: 3
+  category: "system_control"
+  description: "Simulate hangup on current terminal. Can disrupt terminal sessions."
+  threats:
+    - id: "TECHNIQUE-tty-disruption"
+      description: "Hang up controlling terminal to disrupt interactive sessions"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Limited impact. Mostly DoS against terminal sessions."
+
+syslog:
+  tier: 3
+  category: "system_control"
+  description: "Read/control kernel log buffer. Information disclosure of kernel messages."
+  threats:
+    - id: "TECHNIQUE-kptr-leak"
+      description: "Read kernel log to obtain kernel pointer addresses for KASLR bypass"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "dmesg_restrict mitigates this. Info disclosure only."
+
+pidfd_getfd:
+  tier: 3
+  category: "process_inspection"
+  description: "Get a duplicate of another process's file descriptor via pidfd."
+  threats:
+    - id: "TECHNIQUE-fd-stealing"
+      description: "Steal file descriptors from other processes (sockets, files)"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Requires CAP_SYS_PTRACE. Cross-process fd access."
+
+mbind:
+  tier: 3
+  category: "memory_management"
+  description: "Set NUMA memory policy for a memory range. DoS via memory pressure."
+  threats:
+    - id: "TECHNIQUE-numa-dos"
+      description: "Pin memory to specific NUMA nodes to cause memory pressure"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "DoS potential. Requires CAP_SYS_NICE for some policies."
+
+migrate_pages:
+  tier: 3
+  category: "memory_management"
+  description: "Move pages of a process to different NUMA nodes. Cross-process manipulation."
+  threats:
+    - id: "TECHNIQUE-numa-manipulation"
+      description: "Migrate another process's pages to cause performance degradation"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Requires appropriate permissions. DoS via performance degradation."
+
+move_pages:
+  tier: 3
+  category: "memory_management"
+  description: "Move individual pages to specific NUMA nodes. Fine-grained NUMA manipulation."
+  threats:
+    - id: "TECHNIQUE-numa-side-channel"
+      description: "Use page placement to create NUMA-based side channels"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Side-channel potential. Mostly DoS risk in practice."
+
+quotactl:
+  tier: 3
+  category: "system_control"
+  description: "Manipulate disk quotas. Can disable quotas or cause DoS."
+  threats:
+    - id: "TECHNIQUE-quota-bypass"
+      description: "Disable disk quotas to fill filesystem"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Limited attack surface. DoS vector."
+
+acct:
+  tier: 3
+  category: "system_control"
+  description: "Enable/disable process accounting. Information disclosure via accounting file."
+  threats:
+    - id: "TECHNIQUE-acct-disclosure"
+      description: "Enable process accounting to write data to attacker-controlled file"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "Low impact. Requires filesystem write access."
+
+modify_ldt:
+  tier: 3
+  category: "system_control"
+  description: "Modify Local Descriptor Table. x86-specific, can alter segment descriptors."
+  threats:
+    - id: "CVE-2017-5123"
+      description: "LDT UAF in kernel leading to write-what-where"
+      date_added: "2025-01-15"
+    - id: "TECHNIQUE-ldt-manipulation"
+      description: "Modify LDT entries for code execution in kernel context"
+      date_added: "2025-01-15"
+  last_reviewed: "2025-01-15"
+  notes: "x86-only. Historical exploit surface but modern kernels have mitigations."
