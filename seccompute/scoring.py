@@ -115,6 +115,8 @@ def _collect_all_profile_syscalls(profile: dict) -> set[str]:
 
 def _compute_unknown_weight() -> float:
     """Compute the conservative weight for unknown syscalls (Tier 2 equivalent)."""
+    if not TIER2:
+        return 0.0
     return TIER2_BUDGET / len(TIER2)
 
 

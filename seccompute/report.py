@@ -138,9 +138,14 @@ def _percentile(data: list[float], pct: float) -> float:
     if not data:
         return 0.0
     sorted_data = sorted(data)
-    k = (len(sorted_data) - 1) * pct / 100.0
-    lo, hi = int(k), min(int(k) + 1, len(sorted_data) - 1)
-    return sorted_data[lo] + (sorted_data[hi] - sorted_data[lo]) * (k - lo)
+    n = len(sorted_data)
+    if n == 1:
+        return sorted_data[0]
+    k = (n - 1) * pct / 100.0
+    lo = int(k)
+    hi = min(lo + 1, n - 1)
+    frac = k - lo
+    return sorted_data[lo] + (sorted_data[hi] - sorted_data[lo]) * frac
 
 
 def write_json(report: dict, out_path: Path | None, use_gzip: bool) -> None:

@@ -76,3 +76,7 @@ HIGH_RISK_WEIGHTS = {
     "acct": 2.0,
     "reboot": 2.0,
 }
+
+for _sc, _w in HIGH_RISK_WEIGHTS.items():
+    if _w < 0:
+        raise ValueError(f"HIGH_RISK_WEIGHTS['{_sc}'] must be non-negative, got {_w}")

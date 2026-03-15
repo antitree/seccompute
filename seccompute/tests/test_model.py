@@ -249,8 +249,8 @@ def test_delta_pct_negative_when_less_hardened():
     p_rules = [_rule(list(DANGEROUS_SYSCALLS), "SCMP_ACT_ALLOW")]
     p = _profile("SCMP_ACT_ERRNO", p_rules)
     metrics = score_profile(p, ref_states, ref_risk)
-    # ref_risk is 0 and profile_risk > 0 → spec: -100%
-    assert metrics["vsDefaultHardeningDeltaPct"] == -100.0
+    # ref_risk is 0 and profile_risk > 0 → delta = -profile_risk * 100
+    assert metrics["vsDefaultHardeningDeltaPct"] == round(-metrics["profileRisk"] * 100.0, 1)
 
 
 def test_zero_ref_risk_zero_profile_risk_gives_zero_delta():

@@ -234,7 +234,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Discover files
     glob_pattern = "**/*.json" if args.recursive else "*.json"
-    files = sorted(profiles_dir.glob(glob_pattern))
+    resolved_base = profiles_dir.resolve()
+    files = sorted(
+        f for f in profiles_dir.glob(glob_pattern)
+        if f.resolve().is_relative_to(resolved_base) and not f.is_symlink()
+    )
 
     # Thread count
     cpu_count = os.cpu_count() or 1

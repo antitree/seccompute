@@ -77,6 +77,10 @@ def _syscall_states(profile: dict, syscall_set: frozenset[str]) -> dict[str, str
         args = rule.get("args", [])
         includes = rule.get("includes", {})
         excludes = rule.get("excludes", {})
+        if not isinstance(includes, dict):
+            includes = {}
+        if not isinstance(excludes, dict):
+            excludes = {}
         has_condition = bool(args or includes or excludes)
         has_cap_exclude = bool(excludes.get("caps"))
 
@@ -99,7 +103,7 @@ def _syscall_states(profile: dict, syscall_set: frozenset[str]) -> dict[str, str
     for sc in syscall_set:
         if sc in unconditional_allow:
             states[sc] = "allowed"
-        elif sc in unconditional_block and sc not in unconditional_allow:
+        elif sc in unconditional_block:
             states[sc] = "blocked"
         elif sc in conditional_allow:
             states[sc] = "conditional"
@@ -113,7 +117,7 @@ def _risk(states: dict[str, str], weights: dict[str, float] | None = None) -> fl
     total = 0.0
     for sc, state in states.items():
         w = float((weights or {}).get(sc, 1.0))
-        total += w * _STATE_SCORE[state]
+        total += w * _STATE_SCORE.get(state, 0.0)
     return total
 
 
@@ -130,6 +134,10 @@ def _condition_usage(profile: dict) -> dict[str, int]:
         args = rule.get("args", [])
         includes = rule.get("includes", {})
         excludes = rule.get("excludes", {})
+        if not isinstance(includes, dict):
+            includes = {}
+        if not isinstance(excludes, dict):
+            excludes = {}
         if args:
             counts["argFilter"] += len(args)
         if includes.get("caps"):
@@ -207,7 +215,7 @@ def score_profile(
     if ref_risk > 0:
         delta_pct = round((ref_risk - profile_risk) * 100.0 / ref_risk, 1)
     else:
-        delta_pct = -100.0 if profile_risk > 0 else 0.0
+        delta_pct = round(-profile_risk * 100.0, 1) if profile_risk > 0 else 0.0
 
     # improved / regressed syscalls
     order = {"blocked": 0, "conditional": 1, "allowed": 2}

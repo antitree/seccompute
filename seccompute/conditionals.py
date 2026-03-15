@@ -234,14 +234,10 @@ def resolve_effective_state(
         if sc in unconditional_allow:
             # Most permissive: unconditional allow wins
             states[sc] = "allowed"
-        elif sc in conditional_allow and sc not in unconditional_block:
-            states[sc] = "conditional"
-        elif sc in conditional_allow and sc in unconditional_block:
-            # Both conditional allow and unconditional block exist;
-            # conditional allow is more permissive
-            states[sc] = "conditional"
         elif sc in unconditional_block:
             states[sc] = "blocked"
+        elif sc in conditional_allow and sc not in unconditional_block:
+            states[sc] = "conditional"
         else:
             # No explicit rule -> default
             states[sc] = "allowed" if default_permissive else "blocked"

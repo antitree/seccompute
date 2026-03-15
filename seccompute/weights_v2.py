@@ -44,14 +44,17 @@ TIER3: list[str] = [
 
 ALL_DANGEROUS_V2: frozenset[str] = frozenset(TIER1 + TIER2 + TIER3)
 
+for _name, _val in [("TIER1_BUDGET", TIER1_BUDGET), ("TIER2_BUDGET", TIER2_BUDGET), ("TIER3_BUDGET", TIER3_BUDGET)]:
+    if _val < 0:
+        raise ValueError(f"{_name} must be non-negative, got {_val}")
+
 # Pre-compute per-syscall weights
 _TIER_WEIGHTS: dict[str, float] = {}
-for _sc in TIER1:
-    _TIER_WEIGHTS[_sc] = TIER1_BUDGET / len(TIER1)
-for _sc in TIER2:
-    _TIER_WEIGHTS[_sc] = TIER2_BUDGET / len(TIER2)
-for _sc in TIER3:
-    _TIER_WEIGHTS[_sc] = TIER3_BUDGET / len(TIER3)
+for _tier, _budget in [(TIER1, TIER1_BUDGET), (TIER2, TIER2_BUDGET), (TIER3, TIER3_BUDGET)]:
+    if not _tier:
+        raise ValueError(f"Tier with budget {_budget} has no syscalls; cannot compute weights")
+    for _sc in _tier:
+        _TIER_WEIGHTS[_sc] = _budget / len(_tier)
 
 
 def tier_weight(syscall: str) -> float:
