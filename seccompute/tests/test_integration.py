@@ -69,7 +69,17 @@ def test_scoring_result_to_dict():
 # CLI invocation
 # ---------------------------------------------------------------------------
 
-_PROFILES_DIR = Path(__file__).parent.parent.parent / "app" / "static" / "profiles"
+from seccompute.default_profiles import cache_path_for, resolve_default_profile
+
+
+def _get_docker_profile_path():
+    """Return a path to the Docker default profile, resolving/caching as needed."""
+    cached = cache_path_for("docker")
+    if not cached.exists():
+        data = resolve_default_profile("docker")
+        if data is None:
+            return None
+    return cached if cached.exists() else None
 
 
 def test_cli_with_profile_json(tmp_path):
@@ -85,15 +95,15 @@ def test_cli_with_profile_json(tmp_path):
     )
     assert result.returncode == 0
     output = json.loads(result.stdout)
-    assert "score" in output
-    assert output["score"] == 100
+    assert "risk_score" in output
+    assert output["risk_score"] == 100
 
 
 def test_cli_with_docker_default():
     """CLI should work with the Docker default profile."""
-    docker_path = _PROFILES_DIR / "DEFAULT-docker.json"
-    if not docker_path.exists():
-        pytest.skip("Docker default profile not found")
+    docker_path = _get_docker_profile_path()
+    if docker_path is None:
+        pytest.skip("Docker default profile not available")
 
     result = subprocess.run(
         [sys.executable, "-m", "seccompute", str(docker_path)],
@@ -102,7 +112,7 @@ def test_cli_with_docker_default():
     )
     assert result.returncode == 0
     output = json.loads(result.stdout)
-    assert 0 <= output["score"] <= 100
+    assert 0 <= output["risk_score"] <= 100
 
 
 def test_cli_text_format(tmp_path):
@@ -117,7 +127,7 @@ def test_cli_text_format(tmp_path):
         cwd=str(Path(__file__).parent.parent.parent),
     )
     assert result.returncode == 0
-    assert "Score:" in result.stdout or "score" in result.stdout.lower()
+    assert "Risk Score:" in result.stdout or "score" in result.stdout.lower()
 
 
 def test_cli_invalid_file():

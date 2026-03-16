@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .combos import ComboFinding, evaluate_combos
+from .intent import IntentBlock, load_intent
+from .correctness import CorrectnessDetail, compute_correctness
 from .conditionals import ConditionalNote, analyze_conditionals, resolve_effective_state
 from .known_syscalls import KNOWN_LINUX_SYSCALLS
 from .rules import get_all_rules, get_tier
@@ -125,6 +127,9 @@ class ScoringResult:
     metadata: dict[str, Any]
     granted_caps: list[str] = field(default_factory=list)
     scoring_mode: str = "default"
+    correctness_score: int | None = None
+    correctness_details: list[CorrectnessDetail] = field(default_factory=list)
+    intent: IntentBlock | None = None
 
 
 def _collect_all_profile_syscalls(profile: dict) -> set[str]:
@@ -146,6 +151,7 @@ def score_profile(
     profile: dict,
     arch: str = "SCMP_ARCH_X86_64",
     granted_caps: list[str] | None = None,
+    intent: IntentBlock | None = None,
 ) -> ScoringResult:
     """Score a seccomp profile on a 0-100 hardening scale.
 
@@ -318,6 +324,16 @@ def score_profile(
     for cf in combo_findings:
         warnings.append(f"COMBO [{cf.severity}] {cf.summary}")
 
+    # Load intent from profile if not provided explicitly
+    if intent is None:
+        intent = load_intent(profile)
+
+    # Compute correctness score if intent is available
+    correctness_score = None
+    correctness_details: list[CorrectnessDetail] = []
+    if intent is not None:
+        correctness_score, correctness_details = compute_correctness(syscall_details, intent)
+
     return ScoringResult(
         score=score,
         tier_breakdown=tier_scores,
@@ -328,4 +344,7 @@ def score_profile(
         metadata=metadata,
         granted_caps=granted_caps or [],
         scoring_mode=scoring_mode,
+        correctness_score=correctness_score,
+        correctness_details=correctness_details,
+        intent=intent,
     )

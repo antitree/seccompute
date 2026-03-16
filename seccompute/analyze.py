@@ -32,15 +32,9 @@ from .model import (
     score_profile,
     sha256_file,
 )
+from .default_profiles import resolve_default_profile
 from .report import build_report, write_csv, write_json, write_json_split, write_ndjson
 from .weights import DANGEROUS_SYSCALLS
-
-_DEFAULTS_DIR = Path(__file__).parent.parent / "app" / "static" / "profiles"
-_DEFAULT_FILES = {
-    "docker": "DEFAULT-docker.json",
-    "podman": "DEFAULT-podman.json",
-    "containerd": "DEFAULT-containerd.json",
-}
 
 
 def _log(event: dict, verbose: bool) -> None:
@@ -162,14 +156,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="analyze_profiles",
         description="Batch-analyze OCI seccomp profiles and emit hardening metrics.",
     )
-    parser.add_argument("profiles_dir", help="Directory containing *.json seccomp profiles")
+    parser.add_argument("profiles_dir", help="Directory containing *.json seccomp profiles, or a single .json profile file")
     parser.add_argument(
         "--reference", choices=["docker", "podman", "containerd"], default="docker",
         help="Reference default profile (default: docker)",
     )
     parser.add_argument(
         "--reference-path", dest="reference_path", default=None,
-        help="Directory containing default profiles (default: app/static/profiles)",
+        help="Path to a specific reference profile JSON file (overrides auto-resolution)",
+    )
+    parser.add_argument(
+        "--offline", action="store_true",
+        help="Use only locally cached profiles; do not fetch from remote sources",
     )
     parser.add_argument(
         "--format", dest="formats", action="append", choices=["json", "ndjson", "csv"],
@@ -206,39 +204,57 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    # Validate profiles directory
-    profiles_dir = Path(args.profiles_dir)
-    if not profiles_dir.exists() or not profiles_dir.is_dir():
-        print(
-            f"Error: profiles_dir not found or not a directory: {profiles_dir}",
-            file=sys.stderr,
-        )
+    # Accept either a directory or a single file
+    input_path = Path(args.profiles_dir)
+    if not input_path.exists():
+        print(f"Error: path not found: {input_path}", file=sys.stderr)
+        return 2
+    if input_path.is_file():
+        profiles_dir = input_path.parent
+        explicit_files = [input_path]
+    elif input_path.is_dir():
+        profiles_dir = input_path
+        explicit_files = None
+    else:
+        print(f"Error: not a file or directory: {input_path}", file=sys.stderr)
         return 2
 
-    # Resolve reference profile directory
-    ref_dir = Path(args.reference_path) if args.reference_path else _DEFAULTS_DIR
-    ref_file = _DEFAULT_FILES[args.reference]
-    ref_path = ref_dir / ref_file
-
-    ref_data, ref_err = _load_json(ref_path)
-    if ref_data is None or not is_valid(ref_data)[0]:
-        print(
-            f"Error: failed to load reference profile {ref_path}: {ref_err or 'invalid'}",
-            file=sys.stderr,
-        )
-        return 4
+    # Resolve reference profile
+    if args.reference_path:
+        ref_path = Path(args.reference_path)
+        ref_data, ref_err = _load_json(ref_path)
+        ref_file = ref_path.name
+        if ref_data is None or not is_valid(ref_data)[0]:
+            print(
+                f"Error: failed to load reference profile {ref_path}: {ref_err or 'invalid'}",
+                file=sys.stderr,
+            )
+            return 4
+    else:
+        ref_file = f"DEFAULT-{args.reference}.json"
+        ref_data = resolve_default_profile(args.reference, offline=args.offline)
+        if ref_data is None or not is_valid(ref_data)[0]:
+            print(
+                f"Error: could not resolve default profile for '{args.reference}'. "
+                "Check network access or supply --reference-path.",
+                file=sys.stderr,
+            )
+            return 4
 
     # Memoize reference states + risk (loaded once)
     ref_states, ref_risk = reference_states_and_risk(ref_data)
     ref_names = _all_syscall_names(ref_data)
 
     # Discover files
-    glob_pattern = "**/*.json" if args.recursive else "*.json"
-    resolved_base = profiles_dir.resolve()
-    files = sorted(
-        f for f in profiles_dir.glob(glob_pattern)
-        if f.resolve().is_relative_to(resolved_base) and not f.is_symlink()
-    )
+    if explicit_files is not None:
+        files = explicit_files
+    else:
+        glob_pattern = "**/*.json" if args.recursive else "*.json"
+        resolved_base = profiles_dir.resolve()
+        files = sorted(
+            f for f in profiles_dir.glob(glob_pattern)
+            if f.resolve().is_relative_to(resolved_base) and not f.is_symlink()
+        )
 
     # Thread count
     cpu_count = os.cpu_count() or 1

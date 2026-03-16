@@ -1,6 +1,5 @@
 """Tests for scoring.py: absolute scoring math, ScoringResult shape."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -36,7 +35,7 @@ def _rule(names, action, args=None, includes=None, excludes=None):
     return r
 
 
-_PROFILES_DIR = Path(__file__).parent.parent.parent / "app" / "static" / "profiles"
+from seccompute.default_profiles import resolve_default_profile
 
 
 # ---------------------------------------------------------------------------
@@ -70,12 +69,9 @@ def test_docker_default_profile_score():
     Expected: high score (70-95) because base is deny-all and dangerous
     syscalls require capabilities.
     """
-    docker_path = _PROFILES_DIR / "DEFAULT-docker.json"
-    if not docker_path.exists():
-        pytest.skip("Docker default profile not found")
-
-    with open(docker_path) as f:
-        profile = json.load(f)
+    profile = resolve_default_profile("docker")
+    if profile is None:
+        pytest.skip("Docker default profile not available")
 
     result = score_profile(profile)
     # Docker default should score between 50 and 95 (deny-all base with cap-gated
