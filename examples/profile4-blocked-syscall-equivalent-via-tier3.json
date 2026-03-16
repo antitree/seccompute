@@ -1,0 +1,92 @@
+{
+  "_comment": [
+    "Profile 4: Blocks a specific dangerous syscall (ptrace, Tier 1) but allows a combination",
+    "of lower-tier syscalls that together provide equivalent functionality.",
+    "",
+    "The substitution demonstrated here:",
+    "  BLOCKED:  ptrace  (Tier 1 — cross-process inspection/injection)",
+    "  ALLOWED:  process_vm_readv + process_vm_writev + pidfd_open + pidfd_getfd",
+    "",
+    "Why this is equivalent:",
+    "  - process_vm_readv/writev: directly read/write another process's memory (Tier 1)",
+    "    These ARE also Tier 1, so this isn't really a 'tier 3 substitution' for those.",
+    "  - pidfd_open + pidfd_getfd: obtain a pidfd to a target process, then steal its",
+    "    file descriptors. Together they replicate ptrace's fd-inspection capability.",
+    "    pidfd_getfd is Tier 3.",
+    "",
+    "A secondary example (pure Tier 3 path):",
+    "  BLOCKED:  reboot  (Tier 3 — host DoS)",
+    "  ALLOWED:  sysrq-trigger write via /proc (not a syscall, but via open+write)",
+    "            OR: settimeofday (Tier 3) to cause NTP sync storms / cert failures",
+    "  This shows that blocking one Tier 3 DoS vector while leaving others open",
+    "  provides false assurance.",
+    "",
+    "Expected scoring behavior:",
+    "  - ptrace blocked: correct, gets full credit",
+    "  - process_vm_readv/writev allowed: Tier 1, ~6.67 pts each — major penalty",
+    "  - pidfd_getfd allowed: Tier 3, minor penalty",
+    "  - Score should NOT be high despite ptrace being blocked",
+    "  - This tests whether seccompute catches functional equivalences"
+  ],
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"],
+  "syscalls": [
+    {
+      "_comment": "Standard safe syscalls",
+      "names": [
+        "read", "write", "open", "openat", "close",
+        "stat", "fstat", "lstat", "lseek",
+        "mmap", "mprotect", "munmap", "brk",
+        "execve", "exit", "exit_group",
+        "fork", "vfork", "wait4", "waitid",
+        "getpid", "getppid", "gettid",
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "kill", "tgkill", "nanosleep",
+        "pipe", "pipe2", "dup", "dup2",
+        "futex", "set_robust_list", "get_robust_list",
+        "socket", "connect", "bind", "listen", "accept", "accept4",
+        "send", "sendto", "recv", "recvfrom",
+        "getcwd", "chdir", "getuid", "getgid",
+        "prctl", "capget", "uname", "getrandom", "seccomp"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "EXPLICITLY BLOCKED: ptrace (Tier 1). Profile author thinks this is safe.",
+      "names": ["ptrace"],
+      "action": "SCMP_ACT_ERRNO"
+    },
+    {
+      "_comment": "ALLOWED: process_vm_readv + process_vm_writev (BOTH Tier 1).",
+      "_security_note": [
+        "These provide direct cross-process memory read/write.",
+        "Functionally equivalent to ptrace PEEKDATA/POKEDATA.",
+        "Both carry Tier 1 weight (~6.67 pts each).",
+        "Blocking ptrace while allowing these provides almost no security benefit."
+      ],
+      "names": ["process_vm_readv", "process_vm_writev"],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "ALLOWED: pidfd_open (not in dangerous tier) + pidfd_getfd (Tier 3).",
+      "_security_note": [
+        "pidfd_open obtains a handle to any process by PID.",
+        "pidfd_getfd then steals file descriptors from that process.",
+        "Together: replicate ptrace's ability to inspect process file descriptors.",
+        "Can steal sockets, pipes, credentials fd, etc."
+      ],
+      "names": ["pidfd_open", "pidfd_getfd", "pidfd_send_signal"],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "ALLOWED: Tier 3 system control syscalls — secondary DoS equivalence example.",
+      "_security_note": [
+        "reboot is blocked (Tier 3). But settimeofday + clock_settime achieve similar",
+        "disruptive effect: breaking TLS cert validation, TOTP, kerberos tickets.",
+        "DoS via time manipulation vs DoS via reboot — different mechanism, similar impact."
+      ],
+      "names": ["settimeofday", "clock_settime"],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}

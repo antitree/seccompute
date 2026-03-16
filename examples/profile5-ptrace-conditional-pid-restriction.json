@@ -1,0 +1,136 @@
+{
+  "_comment": [
+    "Profile 5: Allows ptrace but with a conditional argument filter attempting to restrict",
+    "it to a specific PID argument (PTRACE_ATTACH on a known safe PID only).",
+    "",
+    "The seccomp filter structure:",
+    "  ptrace is allowed ONLY when arg[0] == PTRACE_TRACEME (0) OR",
+    "  when arg[1] (pid) == a specific low PID (e.g. 1 = init).",
+    "",
+    "Why this conditional is INEFFECTIVE and dangerous:",
+    "  1. PTRACE_TRACEME (request=0, arg[0]=0): the child calls this on ITSELF,",
+    "     asking the parent to trace it. This is always pid=0 in arg[1].",
+    "     Allowing PTRACE_TRACEME still enables a parent-child ptrace relationship.",
+    "",
+    "  2. Filtering on pid argument (arg[1]) is NOT a reliable PID confinement.",
+    "     seccomp filters are evaluated at syscall entry. A race condition (TOCTOU)",
+    "     exists: the pid argument can point to a process that has exec'd between",
+    "     the seccomp check and the kernel's ptrace_attach.",
+    "",
+    "  3. seccomp argument filters on ptrace pid do NOT check that the target pid",
+    "     is in the same container — a PID could refer to a host process.",
+    "",
+    "  4. The note in syscall_rules.yaml explicitly states:",
+    "     'Always tier 1. No safe conditional use in containers.'",
+    "",
+    "Expected scoring behavior:",
+    "  - ptrace is 'conditional' (has args filter), not 'blocked'",
+    "  - Conditional multiplier: 0.5x penalty instead of 1.0x",
+    "  - Score should still penalize heavily (0.5 * 6.67 = ~3.3 pts deduction)",
+    "  - seccompute should NOT treat this as equivalent to a full block",
+    "  - This tests that conditional Tier 1 syscalls still get meaningful penalty"
+  ],
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"],
+  "syscalls": [
+    {
+      "_comment": "Standard safe syscalls",
+      "names": [
+        "read", "write", "open", "openat", "close",
+        "stat", "fstat", "lstat", "lseek",
+        "mmap", "mprotect", "munmap", "brk",
+        "execve", "exit", "exit_group",
+        "fork", "vfork", "wait4", "waitid",
+        "getpid", "getppid", "gettid",
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "kill", "tgkill", "nanosleep",
+        "pipe", "pipe2", "dup", "dup2",
+        "socket", "connect", "bind", "listen", "accept", "accept4",
+        "send", "sendto", "recv", "recvfrom",
+        "futex", "getcwd", "chdir",
+        "getuid", "getgid", "prctl", "capget", "uname",
+        "getrandom", "seccomp"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": [
+        "CONDITIONAL: ptrace allowed only for PTRACE_TRACEME (request=0).",
+        "arg[0] is the 'request' parameter. PTRACE_TRACEME = 0.",
+        "This allows a child process to invite its parent to trace it."
+      ],
+      "_security_note": [
+        "PTRACE_TRACEME (0) seems safe but establishes a ptrace relationship.",
+        "A compromised child process can call PTRACE_TRACEME then signal the",
+        "parent. If parent is a debugger or tracing daemon, full ptrace access follows."
+      ],
+      "names": ["ptrace"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "value": 0,
+          "op": "SCMP_CMP_EQ",
+          "_comment": "request == PTRACE_TRACEME (0)"
+        }
+      ]
+    },
+    {
+      "_comment": [
+        "CONDITIONAL: ptrace allowed for PTRACE_ATTACH (16) but ONLY targeting PID 1.",
+        "arg[0] == PTRACE_ATTACH (16), arg[1] == 1 (init/container entrypoint PID).",
+        "Intended use: allow the container's own supervisor to self-debug."
+      ],
+      "_security_note": [
+        "This is the attempted PID confinement. It DOES NOT work reliably because:",
+        "1. PID 1 inside the container may not be PID 1 on the host (pid namespaces).",
+        "2. TOCTOU: pid 1 could exec between seccomp check and ptrace_attach.",
+        "3. If pid namespaces are not used, this could target the HOST init process."
+      ],
+      "names": ["ptrace"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "value": 16,
+          "op": "SCMP_CMP_EQ",
+          "_comment": "request == PTRACE_ATTACH (16)"
+        },
+        {
+          "index": 1,
+          "value": 1,
+          "op": "SCMP_CMP_EQ",
+          "_comment": "pid == 1 (attempted PID confinement — INEFFECTIVE)"
+        }
+      ]
+    },
+    {
+      "_comment": [
+        "CONDITIONAL: ptrace for PTRACE_PEEKDATA/POKEDATA only on PID <= 100.",
+        "Attempting to limit ptrace to 'low' PIDs assumed to be container-internal.",
+        "PTRACE_PEEKDATA = 2, PTRACE_POKEDATA = 5."
+      ],
+      "_security_note": [
+        "SCMP_CMP_LE on pid arg is not a security boundary.",
+        "An attacker can wait for a host process to acquire a low PID (after reaping).",
+        "Also: PTRACE_POKEDATA with any PID allows arbitrary code injection."
+      ],
+      "names": ["ptrace"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "value": 5,
+          "op": "SCMP_CMP_LE",
+          "_comment": "request <= PTRACE_POKEDATA (5) — covers TRACEME, PEEKTEXT, PEEKDATA, PEEKUSER, POKETEXT, POKEDATA"
+        },
+        {
+          "index": 1,
+          "value": 100,
+          "op": "SCMP_CMP_LE",
+          "_comment": "pid <= 100 (attempted low-PID confinement — INEFFECTIVE)"
+        }
+      ]
+    }
+  ]
+}

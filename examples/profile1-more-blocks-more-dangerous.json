@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "Profile 1: Blocks MORE syscalls than moby default, but ALLOWS more Tier 1 dangerous syscalls.",
+    "defaultAction blocks everything not listed. The allow list is deliberately smaller than moby",
+    "(fewer total allowed syscalls) BUT includes bpf and ptrace unconditionally.",
+    "",
+    "Expected scoring behavior:",
+    "  - Coverage score: HIGHER than moby (more syscalls blocked)",
+    "  - Dangerous Exposure score: MUCH LOWER (bpf + ptrace are Tier 1, weight ~6.67 each)",
+    "  - Overall hardening score: LOWER than moby despite blocking more syscalls",
+    "",
+    "This tests that seccompute correctly penalizes dangerous syscall exposure",
+    "regardless of total block count."
+  ],
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"],
+  "syscalls": [
+    {
+      "_comment": "Core process lifecycle — minimal set",
+      "names": [
+        "execve", "execveat", "exit", "exit_group",
+        "fork", "vfork", "wait4", "waitid",
+        "getpid", "getppid", "gettid"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Basic file I/O",
+      "names": [
+        "read", "write", "open", "openat", "close",
+        "stat", "fstat", "lstat", "lseek", "mmap",
+        "mprotect", "munmap", "brk"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Signals and timers",
+      "names": [
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "kill", "tgkill", "nanosleep", "clock_nanosleep"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "INTENTIONALLY ALLOWED: Tier 1 dangerous syscalls.",
+      "_security_note": "bpf weight=6.67, ptrace weight=6.67. Together ~13.3 points of exposure.",
+      "names": ["bpf", "ptrace"],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "INTENTIONALLY ALLOWED: Two more Tier 1 syscalls for extra exposure.",
+      "_security_note": "process_vm_readv + process_vm_writev: cross-process memory r/w. weight ~6.67 each.",
+      "names": ["process_vm_readv", "process_vm_writev"],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}

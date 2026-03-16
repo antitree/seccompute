@@ -1,0 +1,31 @@
+<svg width="520" height="160" viewBox="0 0 520 160" xmlns="http://www.w3.org/2000/svg">
+
+  <defs>
+    <linearGradient id="secGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <!-- Red section -->
+      <stop offset="0%" stop-color="#ef4444"/>
+      <stop offset="35%" stop-color="#ef4444"/>
+
+      <!-- Neutral midpoint -->
+      <stop offset="30%" stop-color="orange"/>
+      <stop offset="63.5%" stop-color="yellow"/>
+
+      <!-- Green section -->
+      <stop offset="63.5%" stop-color="#22c55e"/>
+      <stop offset="100%" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+
+  <text
+    x="20"
+    y="70"
+    font-family="JetBrains Mono, Fira Code, monospace"
+    font-size="72"
+    font-weight="600"
+    fill="url(#secGradient)"
+    letter-spacing="2"
+  >
+    SECCOMPUTE
+  </text
+
+</svg>
