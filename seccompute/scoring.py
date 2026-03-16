@@ -24,6 +24,7 @@ from .combos import ComboFinding, evaluate_combos
 from .conditionals import ConditionalNote, analyze_conditionals, resolve_effective_state
 from .known_syscalls import KNOWN_LINUX_SYSCALLS
 from .rules import get_all_rules, get_tier
+from .cap_scope import get_scope_for_caps
 from .weights_v2 import (
     ALL_DANGEROUS_V2,
     TIER1, TIER1_BUDGET,
@@ -40,6 +41,23 @@ _STATE_MULTIPLIER: dict[str, float] = {
     "conditional": 0.5,
     "allowed": 1.0,
 }
+
+# Elevated mode: in-scope primary syscalls (justified by declared caps)
+_STATE_MULTIPLIER_INSCOPE_PRIMARY: dict[str, float] = {
+    "blocked": 0.0,
+    "conditional": 0.1,  # tight scoping of an in-scope syscall is good
+    "allowed": 0.4,      # still a deduction but intentional
+}
+
+# Elevated mode: in-scope related syscalls (often needed alongside cap)
+_STATE_MULTIPLIER_INSCOPE_RELATED: dict[str, float] = {
+    "blocked": 0.0,
+    "conditional": 0.3,
+    "allowed": 0.7,
+}
+
+# Default mode: Tier 1 conditional gets 0.75x (not 0.5x -- still very dangerous)
+_TIER1_CONDITIONAL_MULTIPLIER_DEFAULT = 0.75
 
 
 @dataclass
@@ -105,6 +123,8 @@ class ScoringResult:
     combo_findings: list[ComboFinding]
     warnings: list[str]
     metadata: dict[str, Any]
+    granted_caps: list[str] = field(default_factory=list)
+    scoring_mode: str = "default"
 
 
 def _collect_all_profile_syscalls(profile: dict) -> set[str]:
@@ -125,6 +145,7 @@ def _compute_unknown_weight() -> float:
 def score_profile(
     profile: dict,
     arch: str = "SCMP_ARCH_X86_64",
+    granted_caps: list[str] | None = None,
 ) -> ScoringResult:
     """Score a seccomp profile on a 0-100 hardening scale.
 
@@ -192,6 +213,14 @@ def score_profile(
                 f"Consider adding a rule entry to the YAML."
             )
 
+    # Cap scope resolution for elevated mode
+    scoring_mode = "default"
+    primary_scope: set[str] = set()
+    related_scope: set[str] = set()
+    if granted_caps:
+        scoring_mode = "elevated"
+        primary_scope, related_scope = get_scope_for_caps(granted_caps)
+
     # Resolve effective states for all scored syscalls
     states = resolve_effective_state(profile, frozenset(score_set))
 
@@ -214,14 +243,26 @@ def score_profile(
     # Score known dangerous syscalls
     for sc in sorted(ALL_DANGEROUS_V2):
         state = states.get(sc, "blocked")
-        multiplier = _STATE_MULTIPLIER[state]
+        t = get_tier(sc)
+        if scoring_mode == "elevated":
+            if sc in primary_scope:
+                multiplier = _STATE_MULTIPLIER_INSCOPE_PRIMARY[state]
+            elif sc in related_scope:
+                multiplier = _STATE_MULTIPLIER_INSCOPE_RELATED[state]
+            else:
+                multiplier = _STATE_MULTIPLIER[state]
+        else:
+            # Default mode: Tier 1 conditional is more dangerous than 0.5x
+            if t == 1 and state == "conditional":
+                multiplier = _TIER1_CONDITIONAL_MULTIPLIER_DEFAULT
+            else:
+                multiplier = _STATE_MULTIPLIER[state]
         weight = tier_weight(sc)
         deduction = weight * multiplier
 
         total_deduction += deduction
 
         # Update tier breakdown
-        t = get_tier(sc)
         tier_key = f"tier{t}"
         if tier_key in tier_scores:
             tier_scores[tier_key].deduction += deduction
@@ -269,6 +310,8 @@ def score_profile(
         "default_action": default_action,
         "total_dangerous_syscalls": len(ALL_DANGEROUS_V2),
         "unknown_syscalls_found": len(active_unknowns),
+        "scoring_mode": scoring_mode,
+        "granted_caps": granted_caps or [],
     }
 
     # Append combo findings as warnings so they surface in CLI output
@@ -283,4 +326,6 @@ def score_profile(
         combo_findings=combo_findings,
         warnings=warnings,
         metadata=metadata,
+        granted_caps=granted_caps or [],
+        scoring_mode=scoring_mode,
     )

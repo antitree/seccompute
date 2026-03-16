@@ -68,8 +68,22 @@ def _serialize_result(result: ScoringResult) -> dict:
             "references": cf.references,
         })
 
+    # Cap scope analysis (elevated mode only)
+    cap_scope_analysis = {}
+    if result.scoring_mode == "elevated" and result.granted_caps:
+        from .cap_scope import get_scope_for_caps
+        primary, related = get_scope_for_caps(result.granted_caps)
+        cap_scope_analysis = {
+            "in_scope_primary": [sd.name for sd in result.syscall_details if sd.name in primary and sd.state != "blocked"],
+            "in_scope_related": [sd.name for sd in result.syscall_details if sd.name in related and sd.state != "blocked"],
+            "out_of_scope_dangerous": [sd.name for sd in result.syscall_details if sd.name not in primary and sd.name not in related and sd.state != "blocked" and sd.tier in (1, 2)],
+        }
+
     return {
         "score": result.score,
+        "scoring_mode": result.scoring_mode,
+        "granted_caps": result.granted_caps,
+        "cap_scope_analysis": cap_scope_analysis,
         "tier_breakdown": tier_breakdown,
         "syscall_details": syscall_details,
         "conditionals": conditionals,
@@ -79,10 +93,27 @@ def _serialize_result(result: ScoringResult) -> dict:
     }
 
 
+def _caps_for_syscall(syscall: str, granted_caps: list[str]) -> str:
+    """Return which granted caps justify this syscall."""
+    from .cap_scope import _load
+    scope = _load()
+    justifying = []
+    for cap in granted_caps:
+        entry = scope.get(cap, {})
+        if syscall in entry.get("primary", []) or syscall in entry.get("related", []):
+            justifying.append(cap)
+    return ", ".join(justifying) if justifying else "unknown"
+
+
 def _format_text(result: ScoringResult) -> str:
     """Format ScoringResult as human-readable text."""
     lines = []
-    lines.append(f"Score: {result.score}/100")
+    if result.scoring_mode == "elevated":
+        caps_str = ", ".join(result.granted_caps)
+        lines.append(f"Score: {result.score}/100  [ELEVATED MODE: {caps_str}]")
+        lines.append("NOTE: Syscalls in-scope for declared caps receive reduced penalties.")
+    else:
+        lines.append(f"Score: {result.score}/100  [DEFAULT MODE]")
     lines.append("")
 
     lines.append("Tier Breakdown:")
@@ -94,6 +125,33 @@ def _format_text(result: ScoringResult) -> str:
             f"{ts.allowed_count} allowed | deduction: {ts.deduction:.1f}"
         )
     lines.append("")
+
+    if result.scoring_mode == "elevated" and result.granted_caps:
+        from .cap_scope import get_scope_for_caps
+        primary, related = get_scope_for_caps(result.granted_caps)
+
+        in_scope_allowed = [
+            sd for sd in result.syscall_details
+            if sd.state != "blocked" and sd.name in primary
+        ]
+        out_of_scope_allowed = [
+            sd for sd in result.syscall_details
+            if sd.state != "blocked" and sd.name not in primary and sd.name not in related
+            and sd.tier in (1, 2)
+        ]
+
+        if in_scope_allowed:
+            lines.append("In-scope allowances (expected for declared caps):")
+            for sd in in_scope_allowed:
+                lines.append(f"  {sd.name}: {sd.state.upper()} — justified by {_caps_for_syscall(sd.name, result.granted_caps)}")
+            lines.append("")
+
+        if out_of_scope_allowed:
+            lines.append("Out-of-scope allowances (unexplained by declared caps):")
+            for sd in out_of_scope_allowed:
+                marker = "ALLOWED" if sd.state == "allowed" else "CONDITIONAL"
+                lines.append(f"  {sd.name}: {marker} (T{sd.tier}) — no declared cap justifies this")
+            lines.append("")
 
     if result.combo_findings:
         lines.append("Combo Findings (emergent risk):")
@@ -153,6 +211,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Output format (default: json)",
     )
     parser.add_argument(
+        "--caps",
+        default="",
+        help="Comma-separated Linux capabilities granted to container (e.g. CAP_SYS_ADMIN,CAP_NET_ADMIN). Enables elevated scoring mode.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Detailed per-syscall breakdown to stderr",
@@ -184,7 +247,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Error: not a valid OCI seccomp profile (missing defaultAction)", file=sys.stderr)
         return 1
 
-    result = score_profile(profile, arch=args.arch)
+    granted_caps = [c.strip() for c in args.caps.split(",") if c.strip()] if args.caps else None
+    result = score_profile(profile, arch=args.arch, granted_caps=granted_caps)
 
     if args.verbose:
         for sd in result.syscall_details:

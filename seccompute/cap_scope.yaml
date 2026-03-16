@@ -1,0 +1,202 @@
+# Maps Linux capabilities to syscalls they justify allowing.
+#
+# Derived from the actual cap-gating in container runtime default seccomp profiles:
+#   - Moby/Docker: vendor/github.com/moby/profiles/seccomp/default.json
+#   - containerd:  contrib/seccomp/seccomp_default.go
+#   - Podman:      pkg/seccomp/seccomp.json (containers/common)
+#
+# primary: syscalls directly gated behind this capability in runtime profiles
+# related: syscalls often needed alongside but not formally gated; still warrant attention
+#
+# NOTE: Podman diverges from Moby/containerd significantly for CAP_SYS_ADMIN —
+# Podman does not gate mount/umount/unshare/clone/fanotify_init behind it because
+# Podman operates rootless and handles those via user namespaces separately.
+# We use the Moby/containerd definition as the primary reference since it is more
+# conservative (requires the cap to allow those syscalls).
+#
+# NOTE: The Linux capabilities(7) man page describes kernel-level semantics which
+# are broader than what any runtime gates via seccomp. Runtime profiles focus on
+# syscalls that are dangerous without the cap but expected with it.
+
+cap_scope:
+  CAP_SYS_ADMIN:
+    # Moby/containerd gate all of these behind CAP_SYS_ADMIN
+    primary:
+      - bpf
+      - clone
+      - clone3
+      - fanotify_init
+      - fsconfig
+      - fsmount
+      - fsopen
+      - fspick
+      - lookup_dcookie
+      - lsm_get_self_attr
+      - lsm_list_modules
+      - lsm_set_self_attr
+      - mount
+      - mount_setattr
+      - move_mount
+      - open_tree
+      - perf_event_open
+      - quotactl
+      - quotactl_fd
+      - setdomainname
+      - sethostname
+      - setns
+      - syslog
+      - umount
+      - umount2
+      - unshare
+    # Capabilities(7) lists these but runtimes don't gate them via seccomp
+    related:
+      - pivot_root
+      - swapon
+      - swapoff
+      - keyctl
+
+  CAP_SYS_PTRACE:
+    # Moby/containerd: kcmp, pidfd_getfd, process_madvise, process_vm_readv/writev, ptrace
+    # Podman: only kcmp, process_madvise (notably omits ptrace/process_vm_*)
+    primary:
+      - kcmp
+      - pidfd_getfd
+      - process_madvise
+      - process_vm_readv
+      - process_vm_writev
+      - ptrace
+
+  CAP_SYS_MODULE:
+    # Consistent across all runtimes; Podman adds query_module
+    primary:
+      - delete_module
+      - finit_module
+      - init_module
+      - query_module
+
+  CAP_SYS_BOOT:
+    # Moby/containerd gate reboot; kexec_load/kexec_file_load not in runtime profiles
+    # but documented in capabilities(7) under CAP_SYS_BOOT
+    primary:
+      - reboot
+    related:
+      - kexec_load
+      - kexec_file_load
+
+  CAP_SYS_CHROOT:
+    primary:
+      - chroot
+
+  CAP_SYS_RAWIO:
+    # Consistent across all runtimes
+    primary:
+      - ioperm
+      - iopl
+
+  CAP_SYS_TIME:
+    # Consistent across all runtimes
+    primary:
+      - clock_settime
+      - clock_settime64
+      - settimeofday
+      - stime
+    related:
+      - adjtimex
+      - clock_adjtime
+
+  CAP_SYS_NICE:
+    # Moby/containerd gate NUMA memory policy syscalls (not scheduling syscalls)
+    # capabilities(7) covers scheduling syscalls too but runtimes don't seccomp-gate them
+    primary:
+      - get_mempolicy
+      - mbind
+      - set_mempolicy
+      - set_mempolicy_home_node
+    related:
+      - nice
+      - setpriority
+      - sched_setscheduler
+      - sched_setparam
+      - sched_setaffinity
+
+  CAP_SYS_PACCT:
+    primary:
+      - acct
+
+  CAP_SYS_TTY_CONFIG:
+    primary:
+      - vhangup
+
+  CAP_DAC_READ_SEARCH:
+    primary:
+      - open_by_handle_at
+
+  CAP_BPF:
+    # CAP_BPF was split from CAP_SYS_ADMIN in kernel 5.8
+    primary:
+      - bpf
+
+  CAP_PERFMON:
+    # CAP_PERFMON was split from CAP_SYS_ADMIN in kernel 5.8
+    primary:
+      - perf_event_open
+
+  CAP_SYSLOG:
+    primary:
+      - syslog
+
+  CAP_NET_ADMIN:
+    # Runtimes do not formally gate network syscalls via seccomp for CAP_NET_ADMIN.
+    # The capability check happens inside the kernel's socket layer, not via seccomp.
+    # These are informational — expected syscalls when NET_ADMIN is granted.
+    related:
+      - socket
+      - bind
+      - setsockopt
+      - getsockopt
+      - setns
+      - io_uring_setup
+      - io_uring_enter
+
+  CAP_NET_RAW:
+    related:
+      - socket
+      - bind
+
+  CAP_AUDIT_WRITE:
+    # Podman gates socket (netlink audit family) behind CAP_AUDIT_WRITE
+    # syslog is gated behind CAP_SYSLOG, not CAP_AUDIT_WRITE
+    related:
+      - socket
+
+  CAP_IPC_LOCK:
+    # Not gated in runtime seccomp profiles; capabilities(7) documents the relationship
+    related:
+      - mlock
+      - mlock2
+      - mlockall
+
+  CAP_SYS_RESOURCE:
+    related:
+      - setrlimit
+      - prlimit64
+
+  CAP_KILL:
+    related:
+      - kill
+      - tgkill
+      - tkill
+
+  CAP_SETUID:
+    related:
+      - setuid
+      - setreuid
+      - setresuid
+      - setfsuid
+
+  CAP_SETGID:
+    related:
+      - setgid
+      - setregid
+      - setresgid
+      - setfsgid

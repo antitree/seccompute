@@ -184,15 +184,15 @@ def test_scoring_deterministic():
 # ---------------------------------------------------------------------------
 
 def test_conditional_allow_half_weight():
-    """A capability-gated allow should deduct only 0.5x the syscall weight."""
-    # bpf allowed only with CAP_BPF -> conditional -> 0.5x penalty
+    """A capability-gated allow should deduct 0.75x for Tier 1 (dangerous conditional)."""
+    # bpf allowed only with CAP_BPF -> conditional -> 0.75x penalty (Tier 1)
     rules = [_rule(["bpf"], "SCMP_ACT_ALLOW", includes={"caps": ["CAP_BPF"]})]
     p = _profile("SCMP_ACT_ERRNO", rules)
     result = score_profile(p)
 
     full_deduction = TIER1_BUDGET / len(TIER1)
-    half_deduction = full_deduction * 0.5
-    expected_score = round(100 - half_deduction)
+    conditional_deduction = full_deduction * 0.75
+    expected_score = round(100 - conditional_deduction)
     assert result.score == expected_score
 
 

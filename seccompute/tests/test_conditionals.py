@@ -147,7 +147,7 @@ def test_min_kernel_treated_as_conditional():
 
     Docker allows ptrace with minKernel: 4.8. Since virtually all modern systems
     run >= 4.8, this is practically unconditional. But we score it as conditional
-    (0.5x) per spec.
+    (0.75x for Tier 1) per spec.
     """
     p = _profile("SCMP_ACT_ERRNO", [
         _rule(["ptrace"], "SCMP_ACT_ALLOW", includes={"minKernel": "4.8"})
@@ -155,8 +155,8 @@ def test_min_kernel_treated_as_conditional():
     result = score_profile(p)
 
     full_deduction = TIER1_BUDGET / len(TIER1)
-    half_deduction = full_deduction * 0.5
-    expected = round(100 - half_deduction)
+    conditional_deduction = full_deduction * 0.75
+    expected = round(100 - conditional_deduction)
     assert result.score == expected
 
 
@@ -231,8 +231,8 @@ def test_multiple_conditional_rules_stays_conditional():
     result = score_profile(p)
 
     full_deduction = TIER1_BUDGET / len(TIER1)
-    half_deduction = full_deduction * 0.5
-    expected = round(100 - half_deduction)
+    conditional_deduction = full_deduction * 0.75  # Tier 1 conditional = 0.75x
+    expected = round(100 - conditional_deduction)
     assert result.score == expected
 
 
@@ -263,7 +263,7 @@ def test_containerd_bpf_dual_conditional():
     """Containerd: bpf has both CAP_SYS_ADMIN allow AND ERRNO excludes {CAP_SYS_ADMIN, CAP_BPF}.
 
     The include-caps ALLOW makes it conditional. The exclude-caps ERRNO also
-    makes it conditional. Most permissive = conditional (0.5x).
+    makes it conditional. Most permissive = conditional (0.75x for Tier 1).
     """
     rules = [
         _rule(["bpf"], "SCMP_ACT_ALLOW", includes={"caps": ["CAP_SYS_ADMIN"]}),
@@ -275,6 +275,6 @@ def test_containerd_bpf_dual_conditional():
     result = score_profile(p)
 
     full_deduction = TIER1_BUDGET / len(TIER1)
-    half_deduction = full_deduction * 0.5
-    expected = round(100 - half_deduction)
+    conditional_deduction = full_deduction * 0.75
+    expected = round(100 - conditional_deduction)
     assert result.score == expected
