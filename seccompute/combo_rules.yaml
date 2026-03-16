@@ -1,0 +1,250 @@
+# Combo Rules — Emergent Risk from Syscall Combinations
+#
+# These rules detect cases where two or more syscalls together enable an attack
+# that neither could achieve alone, or where allowing a syscall family bypasses
+# controls applied to traditional syscall equivalents.
+#
+# Structure:
+#   id:           unique identifier
+#   name:         short human-readable name
+#   description:  what the combination enables
+#   syscalls:     the io_uring/combo syscalls that must be present
+#   trigger:      "any_allowed" | "all_allowed" | "gate_allowed"
+#                   any_allowed  - fires if ANY of syscalls[] is allowed
+#                   all_allowed  - fires only if ALL of syscalls[] are allowed
+#                   gate_allowed - fires if syscalls[0] (the gate) is allowed
+#                                  (the rest are informational context)
+#   bypasses:     list of syscalls whose seccomp blocks are defeated
+#   bypass_requires_blocked: if true, only flag when at least one bypassed
+#                            syscall is actually blocked in the profile
+#   severity:     HIGH | MEDIUM | LOW
+#   references:   CVE IDs, technique IDs, or URLs
+# ============================================================================
+
+combos:
+  # --------------------------------------------------------------------------
+  # IO_URING BYPASS CHAIN
+  # io_uring submits kernel operations through a shared ring buffer.
+  # seccomp intercepts syscalls at entry — but io_uring operations submitted
+  # via io_uring_enter(2) are dispatched inside the kernel, AFTER the seccomp
+  # checkpoint, making them invisible to the filter.
+  #
+  # Reference: TECHNIQUE-io-uring-escape
+  #   "io_uring bypasses seccomp filters entirely for registered operations"
+  # --------------------------------------------------------------------------
+
+  - id: "COMBO-io-uring-network-bypass"
+    name: "io_uring network bypass"
+    description: >
+      io_uring_enter can submit IORING_OP_SOCKET, IORING_OP_CONNECT,
+      IORING_OP_ACCEPT, IORING_OP_SEND, IORING_OP_RECV, IORING_OP_SENDMSG,
+      IORING_OP_RECVMSG, IORING_OP_SEND_ZC, IORING_OP_SENDMSG_ZC, and
+      IORING_OP_SHUTDOWN — performing full network I/O without invoking the
+      blocked socket/connect/send/recv syscalls directly.
+      seccomp sees only io_uring_enter, not the underlying network operation.
+    syscalls:
+      - "io_uring_setup"
+      - "io_uring_enter"
+    trigger: "all_allowed"
+    bypasses:
+      - "socket"
+      - "socketpair"
+      - "connect"
+      - "bind"
+      - "accept"
+      - "accept4"
+      - "send"
+      - "sendto"
+      - "sendmsg"
+      - "sendmmsg"
+      - "recv"
+      - "recvfrom"
+      - "recvmsg"
+      - "recvmmsg"
+      - "shutdown"
+      - "getsockopt"
+      - "setsockopt"
+    bypass_requires_blocked: true
+    severity: "HIGH"
+    references:
+      - "TECHNIQUE-io-uring-escape"
+      - "CVE-2023-2598"
+      - "CVE-2024-0582"
+
+  - id: "COMBO-io-uring-file-io-bypass"
+    name: "io_uring file I/O bypass"
+    description: >
+      io_uring_enter can submit IORING_OP_READ, IORING_OP_WRITE,
+      IORING_OP_READV, IORING_OP_WRITEV, IORING_OP_READ_FIXED,
+      IORING_OP_WRITE_FIXED, IORING_OP_READ_MULTISHOT, IORING_OP_FSYNC,
+      IORING_OP_SYNC_FILE_RANGE, IORING_OP_FALLOCATE, IORING_OP_FADVISE,
+      and IORING_OP_MADVISE — performing file I/O and memory operations
+      without invoking the corresponding syscalls directly.
+    syscalls:
+      - "io_uring_setup"
+      - "io_uring_enter"
+    trigger: "all_allowed"
+    bypasses:
+      - "read"
+      - "write"
+      - "readv"
+      - "writev"
+      - "pread64"
+      - "pwrite64"
+      - "preadv"
+      - "pwritev"
+      - "preadv2"
+      - "pwritev2"
+      - "fsync"
+      - "fdatasync"
+      - "sync_file_range"
+      - "fallocate"
+      - "fadvise64"
+      - "madvise"
+    bypass_requires_blocked: true
+    severity: "MEDIUM"
+    references:
+      - "TECHNIQUE-io-uring-escape"
+
+  - id: "COMBO-io-uring-filesystem-bypass"
+    name: "io_uring filesystem operations bypass"
+    description: >
+      io_uring_enter can submit IORING_OP_OPENAT, IORING_OP_OPENAT2,
+      IORING_OP_CLOSE, IORING_OP_STATX, IORING_OP_UNLINKAT,
+      IORING_OP_RENAMEAT, IORING_OP_MKDIRAT, IORING_OP_SYMLINKAT,
+      IORING_OP_LINKAT — performing filesystem path operations without
+      invoking the corresponding syscalls directly.
+    syscalls:
+      - "io_uring_setup"
+      - "io_uring_enter"
+    trigger: "all_allowed"
+    bypasses:
+      - "open"
+      - "openat"
+      - "openat2"
+      - "close"
+      - "statx"
+      - "stat"
+      - "fstat"
+      - "lstat"
+      - "unlink"
+      - "unlinkat"
+      - "rename"
+      - "renameat"
+      - "renameat2"
+      - "mkdir"
+      - "mkdirat"
+      - "symlink"
+      - "symlinkat"
+      - "link"
+      - "linkat"
+    bypass_requires_blocked: true
+    severity: "MEDIUM"
+    references:
+      - "TECHNIQUE-io-uring-escape"
+
+  - id: "COMBO-io-uring-xattr-bypass"
+    name: "io_uring extended attribute bypass"
+    description: >
+      io_uring_enter can submit IORING_OP_GETXATTR, IORING_OP_SETXATTR,
+      IORING_OP_FGETXATTR, IORING_OP_FSETXATTR — reading and writing extended
+      attributes without invoking the corresponding syscalls directly.
+    syscalls:
+      - "io_uring_setup"
+      - "io_uring_enter"
+    trigger: "all_allowed"
+    bypasses:
+      - "getxattr"
+      - "lgetxattr"
+      - "fgetxattr"
+      - "setxattr"
+      - "lsetxattr"
+      - "fsetxattr"
+      - "listxattr"
+      - "llistxattr"
+      - "flistxattr"
+    bypass_requires_blocked: true
+    severity: "LOW"
+    references:
+      - "TECHNIQUE-io-uring-escape"
+
+  - id: "COMBO-io-uring-poll-bypass"
+    name: "io_uring poll/epoll bypass"
+    description: >
+      io_uring_enter can submit IORING_OP_POLL_ADD, IORING_OP_POLL_REMOVE,
+      and IORING_OP_EPOLL_CTL — performing event polling without invoking
+      poll(2), epoll_wait(2), or epoll_ctl(2) directly.
+    syscalls:
+      - "io_uring_setup"
+      - "io_uring_enter"
+    trigger: "all_allowed"
+    bypasses:
+      - "poll"
+      - "ppoll"
+      - "select"
+      - "pselect6"
+      - "epoll_wait"
+      - "epoll_pwait"
+      - "epoll_ctl"
+    bypass_requires_blocked: true
+    severity: "LOW"
+    references:
+      - "TECHNIQUE-io-uring-escape"
+
+  - id: "COMBO-io-uring-splice-bypass"
+    name: "io_uring splice/tee bypass"
+    description: >
+      io_uring_enter can submit IORING_OP_SPLICE and IORING_OP_TEE —
+      moving data between file descriptors and pipes without invoking
+      splice(2) or tee(2) directly.
+    syscalls:
+      - "io_uring_setup"
+      - "io_uring_enter"
+    trigger: "all_allowed"
+    bypasses:
+      - "splice"
+      - "tee"
+      - "vmsplice"
+    bypass_requires_blocked: true
+    severity: "LOW"
+    references:
+      - "TECHNIQUE-io-uring-escape"
+
+  - id: "COMBO-io-uring-process-bypass"
+    name: "io_uring process/futex bypass"
+    description: >
+      io_uring_enter can submit IORING_OP_WAITID (wait for child process),
+      IORING_OP_FUTEX_WAIT, IORING_OP_FUTEX_WAKE, IORING_OP_FUTEX_WAITV —
+      waiting on processes and futexes without invoking the corresponding
+      syscalls directly (Linux 6.6+).
+    syscalls:
+      - "io_uring_setup"
+      - "io_uring_enter"
+    trigger: "all_allowed"
+    bypasses:
+      - "futex"
+      - "futex_waitv"
+      - "waitid"
+      - "wait4"
+    bypass_requires_blocked: true
+    severity: "LOW"
+    references:
+      - "TECHNIQUE-io-uring-escape"
+
+  - id: "COMBO-io-uring-ioctl-bypass"
+    name: "io_uring ioctl/device command bypass"
+    description: >
+      io_uring_enter can submit IORING_OP_URING_CMD — a generic passthrough
+      for device-specific commands (NVMe, ublk, io_uring itself). This can
+      invoke ioctl-equivalent operations on supported devices without calling
+      ioctl(2) directly.
+    syscalls:
+      - "io_uring_setup"
+      - "io_uring_enter"
+    trigger: "all_allowed"
+    bypasses:
+      - "ioctl"
+    bypass_requires_blocked: true
+    severity: "MEDIUM"
+    references:
+      - "TECHNIQUE-io-uring-escape"

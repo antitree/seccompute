@@ -56,11 +56,24 @@ def _serialize_result(result: ScoringResult) -> dict:
             "rule_action": cn.rule_action,
         })
 
+    combo_findings = []
+    for cf in result.combo_findings:
+        combo_findings.append({
+            "id": cf.id,
+            "name": cf.name,
+            "severity": cf.severity,
+            "triggered_by": cf.triggered_by,
+            "bypasses_blocked": cf.bypasses_blocked,
+            "description": cf.description,
+            "references": cf.references,
+        })
+
     return {
         "score": result.score,
         "tier_breakdown": tier_breakdown,
         "syscall_details": syscall_details,
         "conditionals": conditionals,
+        "combo_findings": combo_findings,
         "warnings": result.warnings,
         "metadata": result.metadata,
     }
@@ -81,6 +94,15 @@ def _format_text(result: ScoringResult) -> str:
             f"{ts.allowed_count} allowed | deduction: {ts.deduction:.1f}"
         )
     lines.append("")
+
+    if result.combo_findings:
+        lines.append("Combo Findings (emergent risk):")
+        for cf in result.combo_findings:
+            lines.append(f"  [{cf.severity}] {cf.name}")
+            lines.append(f"    Triggered by: {', '.join(cf.triggered_by)}")
+            if cf.bypasses_blocked:
+                lines.append(f"    Bypasses blocked: {', '.join(cf.bypasses_blocked)}")
+        lines.append("")
 
     if result.warnings:
         lines.append("Warnings:")

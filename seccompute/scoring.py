@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .combos import ComboFinding, evaluate_combos
 from .conditionals import ConditionalNote, analyze_conditionals, resolve_effective_state
 from .known_syscalls import KNOWN_LINUX_SYSCALLS
 from .rules import get_all_rules, get_tier
@@ -101,6 +102,7 @@ class ScoringResult:
     tier_breakdown: dict[str, TierScore]
     syscall_details: list[SyscallScore]
     conditionals: list[ConditionalNote]
+    combo_findings: list[ComboFinding]
     warnings: list[str]
     metadata: dict[str, Any]
 
@@ -196,6 +198,9 @@ def score_profile(
     # Analyze conditionals
     conditionals = analyze_conditionals(profile)
 
+    # Evaluate combo rules (emergent risk from syscall combinations)
+    combo_findings = evaluate_combos(profile, states)
+
     # Build tier breakdown
     tier_scores = {
         "tier1": TierScore(tier=1, budget=TIER1_BUDGET, total_syscalls=len(TIER1)),
@@ -266,11 +271,16 @@ def score_profile(
         "unknown_syscalls_found": len(active_unknowns),
     }
 
+    # Append combo findings as warnings so they surface in CLI output
+    for cf in combo_findings:
+        warnings.append(f"COMBO [{cf.severity}] {cf.summary}")
+
     return ScoringResult(
         score=score,
         tier_breakdown=tier_scores,
         syscall_details=syscall_details,
         conditionals=conditionals,
+        combo_findings=combo_findings,
         warnings=warnings,
         metadata=metadata,
     )
