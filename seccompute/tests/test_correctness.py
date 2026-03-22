@@ -318,4 +318,5 @@ class TestTextOutput:
         p = _profile()
         result = score_profile(p)
         text = _format_text(result)
-        assert "N/A" in text
+        # Without intent, correctness line is omitted entirely
+        assert "Correctness" not in text

@@ -310,6 +310,10 @@ def score_profile(
     raw_score = 100.0 - total_deduction
     score = max(0, min(100, round(raw_score)))
 
+    # Extract x-seccompute acknowledged T1 syscalls for grader forced-F override
+    x_seccompute_allow = set(profile.get("x-seccompute", {}).get("allow", []))
+    x_seccompute_acknowledged_t1 = sorted(x_seccompute_allow & set(TIER1))
+
     metadata = {
         "arch": arch,
         "engine_version": ENGINE_VERSION,
@@ -318,6 +322,7 @@ def score_profile(
         "unknown_syscalls_found": len(active_unknowns),
         "scoring_mode": scoring_mode,
         "granted_caps": granted_caps or [],
+        "x_seccompute_acknowledged_t1": x_seccompute_acknowledged_t1,
     }
 
     # Append combo findings as warnings so they surface in CLI output

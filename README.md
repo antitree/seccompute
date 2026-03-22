@@ -23,6 +23,7 @@ Or score a profile file from the CLI:
 
 ```bash
 seccompute profile.json
+seccompute profile.json --grade    # letter-grade visualization
 ```
 
 ## Install

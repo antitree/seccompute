@@ -89,8 +89,8 @@ def test_all_tier1_allowed_loses_60_points():
     rules = [_rule(list(TIER1), "SCMP_ACT_ALLOW")]
     p = _profile("SCMP_ACT_ERRNO", rules)
     result = score_profile(p)
-    # Score = 100 - 60 (T1 budget fully deducted) = 40
-    assert result.score == 40
+    # Score = 100 - 85 (T1 budget fully deducted) = 15
+    assert result.score == 15
 
 
 def test_all_tier2_allowed_loses_30_points():
@@ -98,8 +98,8 @@ def test_all_tier2_allowed_loses_30_points():
     rules = [_rule(list(TIER2), "SCMP_ACT_ALLOW")]
     p = _profile("SCMP_ACT_ERRNO", rules)
     result = score_profile(p)
-    # Score = 100 - 30 (T2 budget fully deducted) = 70
-    assert result.score == 70
+    # Score = 100 - 10 (T2 budget fully deducted) = 90
+    assert result.score == 90
 
 
 def test_all_tier3_allowed_loses_10_points():
@@ -107,8 +107,8 @@ def test_all_tier3_allowed_loses_10_points():
     rules = [_rule(list(TIER3), "SCMP_ACT_ALLOW")]
     p = _profile("SCMP_ACT_ERRNO", rules)
     result = score_profile(p)
-    # Score = 100 - 10 (T3 budget fully deducted) = 90
-    assert result.score == 90
+    # Score = 100 - 5 (T3 budget fully deducted) = 95
+    assert result.score == 95
 
 
 def test_all_dangerous_allowed_scores_zero():

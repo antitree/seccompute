@@ -140,107 +140,48 @@ def _caps_for_syscall(syscall: str, granted_caps: list[str]) -> str:
 
 
 def _format_text(result: ScoringResult) -> str:
-    """Format ScoringResult as human-readable text."""
+    """Format ScoringResult as human-readable text.
+
+    Layout:
+      1. Combo bypass visualizations (if any)
+      2. Final summary (scores, exposed syscalls count, arch)
+    """
     lines = []
+
+    # 1. Combo bypass visualizations at the top
+    if result.combo_findings:
+        for cf in result.combo_findings:
+            lines.append(render_combo_warning(cf, style=4))
+
+    # 2. Summary
     if result.scoring_mode == "elevated":
         caps_str = ", ".join(result.granted_caps)
         lines.append(f"Risk Score: {result.score}/100  [ELEVATED MODE: {caps_str}]")
-        lines.append("NOTE: Syscalls in-scope for declared caps receive reduced penalties.")
+    elif result.correctness_score is not None:
+        lines.append(f"Risk Score:        {result.score}/100")
+        lines.append(f"Correctness Score: {result.correctness_score}/100")
+        if result.intent and result.intent.description:
+            lines.append(f"Intent:            {result.intent.description}")
     else:
-        if result.correctness_score is not None:
-            lines.append(f"Risk Score:        {result.score}/100")
-            lines.append(f"Correctness Score: {result.correctness_score}/100")
-            if result.intent and result.intent.description:
-                lines.append(f"Intent:            {result.intent.description}")
-        else:
-            lines.append(f"Risk Score: {result.score}/100")
-            lines.append("Correctness Score: N/A  (run with --interactive to declare intent)")
-    lines.append("")
+        lines.append(f"Risk Score: {result.score}/100")
 
-    lines.append("Tier Breakdown:")
-    for key in ("tier1", "tier2", "tier3"):
-        ts = result.tier_breakdown[key]
-        lines.append(
-            f"  Tier {ts.tier} (budget {ts.budget}): "
-            f"{ts.blocked_count} blocked, {ts.conditional_count} conditional, "
-            f"{ts.allowed_count} allowed | deduction: {ts.deduction:.1f}"
-        )
-    lines.append("")
-
-    if result.correctness_score is not None:
-        unjustified = [cd for cd in result.correctness_details
-                      if cd.state != "blocked" and not cd.justification]
-        justified_unconfined = [cd for cd in result.correctness_details
-                               if cd.state != "blocked" and cd.justification and not cd.confined]
-        justified_confined = [cd for cd in result.correctness_details
-                             if cd.state != "blocked" and cd.justification and cd.confined]
-
-        lines.append("Correctness Breakdown:")
-        lines.append(f"  Justified + confined (full credit):  {len(justified_confined)}")
-        lines.append(f"  Justified, not confined (0.3x):      {len(justified_unconfined)}")
-        lines.append(f"  No justification (full penalty):     {len(unjustified)}")
-        if unjustified:
-            lines.append("  Unjustified allowances:")
-            for cd in unjustified:
-                lines.append(f"    {cd.name} (T{cd.tier}, deduction={cd.deduction:.2f})")
-        lines.append("")
-
-    if result.scoring_mode == "elevated" and result.granted_caps:
-        from .cap_scope import get_scope_for_caps
-        primary, related = get_scope_for_caps(result.granted_caps)
-
-        in_scope_allowed = [
-            sd for sd in result.syscall_details
-            if sd.state != "blocked" and sd.name in primary
-        ]
-        out_of_scope_allowed = [
-            sd for sd in result.syscall_details
-            if sd.state != "blocked" and sd.name not in primary and sd.name not in related
-            and sd.tier in (1, 2)
-        ]
-
-        if in_scope_allowed:
-            lines.append("In-scope allowances (expected for declared caps):")
-            for sd in in_scope_allowed:
-                lines.append(f"  {sd.name}: {sd.state.upper()} — justified by {_caps_for_syscall(sd.name, result.granted_caps)}")
-            lines.append("")
-
-        if out_of_scope_allowed:
-            lines.append("Out-of-scope allowances (unexplained by declared caps):")
-            for sd in out_of_scope_allowed:
-                marker = "ALLOWED" if sd.state == "allowed" else "CONDITIONAL"
-                lines.append(f"  {sd.name}: {marker} (T{sd.tier}) — no declared cap justifies this")
-            lines.append("")
+    exposed = [sd for sd in result.syscall_details if sd.state != "blocked"]
+    exposed_t1 = [sd for sd in exposed if sd.tier == 1]
+    exposed_t2 = [sd for sd in exposed if sd.tier == 2]
+    lines.append(f"Exposed:           {len(exposed)} syscalls "
+                 f"({len(exposed_t1)} tier-1, {len(exposed_t2)} tier-2)")
 
     if result.combo_findings:
-        lines.append("Combo Findings (emergent risk):")
-        for cf in result.combo_findings:
-            lines.append(render_combo_warning(cf, style=4))
-        lines.append("")
+        lines.append(f"Combo findings:    {len(result.combo_findings)}")
 
-    if result.warnings:
+    non_combo_warnings = [w for w in result.warnings if not w.startswith("COMBO ")]
+    if non_combo_warnings:
         lines.append("Warnings:")
-        for w in result.warnings:
+        for w in non_combo_warnings:
             lines.append(f"  - {w}")
-        lines.append("")
 
-    # Show only non-blocked dangerous syscalls for brevity
-    exposed = [sd for sd in result.syscall_details if sd.state != "blocked"]
-    if exposed:
-        lines.append("Exposed Dangerous Syscalls:")
-        for sd in exposed:
-            marker = "ALLOWED" if sd.state == "allowed" else "CONDITIONAL"
-            unknown_tag = " [UNKNOWN]" if sd.is_unknown else ""
-            lines.append(
-                f"  {sd.name}: {marker} (T{sd.tier}, weight={sd.weight:.2f}, "
-                f"deduction={sd.deduction:.2f}){unknown_tag}"
-            )
-    else:
-        lines.append("No dangerous syscalls exposed.")
-
-    lines.append("")
-    lines.append(f"Arch: {result.metadata.get('arch', 'unknown')}")
-    lines.append(f"Engine: v{result.metadata.get('engine_version', 'unknown')}")
+    lines.append(f"Arch: {result.metadata.get('arch', 'unknown')}  "
+                 f"Engine: v{result.metadata.get('engine_version', 'unknown')}")
 
     return "\n".join(lines)
 
@@ -270,6 +211,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--caps",
         default="",
         help="Comma-separated Linux capabilities granted to container (e.g. CAP_SYS_ADMIN,CAP_NET_ADMIN). Enables elevated scoring mode.",
+    )
+    parser.add_argument(
+        "--grade",
+        action="store_true",
+        help="Show graded visualization with letter grade and tier breakdown",
     )
     parser.add_argument(
         "--verbose",
@@ -386,6 +332,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"Scores saved to {profile_path}", file=sys.stderr)
 
+    if args.grade:
+        from .grader import render_grade
+        print(render_grade(result, style=4))
+        if result.warnings or result.combo_findings:
+            return 2
+        return 0
+
     if args.verbose:
         for sd in result.syscall_details:
             if sd.state != "blocked":
@@ -416,14 +369,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(_format_text(result))
 
-    # Combo warnings to stderr with rich viz
-    for cf in result.combo_findings:
-        print(render_combo_warning(cf, style=4), file=sys.stderr)
-
-    # Other warnings to stderr
-    non_combo_warnings = [w for w in result.warnings if not w.startswith("COMBO ")]
-    for w in non_combo_warnings:
-        print(f"WARNING: {w}", file=sys.stderr)
 
     if result.warnings or result.combo_findings:
         return 2

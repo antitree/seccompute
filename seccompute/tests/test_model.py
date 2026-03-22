@@ -411,25 +411,25 @@ class TestThreatV2Scoring:
             _rule(TIER1, "SCMP_ACT_ALLOW"),
         ]
         p = _profile("SCMP_ACT_ERRNO", rules)
-        assert score_dangerous_exposure(p) == -60.0
+        assert score_dangerous_exposure(p) == -85.0
 
     def test_de_all_t2_open(self):
-        """Profile allowing all T2 syscalls -> DE=-30.0."""
+        """Profile allowing all T2 syscalls -> DE=-10.0."""
         rules = [
             _rule(list(ALL_DANGEROUS_V2 - set(TIER2)), "SCMP_ACT_ERRNO"),
             _rule(TIER2, "SCMP_ACT_ALLOW"),
         ]
         p = _profile("SCMP_ACT_ERRNO", rules)
-        assert score_dangerous_exposure(p) == -30.0
+        assert score_dangerous_exposure(p) == -10.0
 
     def test_de_all_t3_open(self):
-        """Profile allowing all T3 syscalls -> DE=-10.0."""
+        """Profile allowing all T3 syscalls -> DE=-5.0."""
         rules = [
             _rule(list(ALL_DANGEROUS_V2 - set(TIER3)), "SCMP_ACT_ERRNO"),
             _rule(TIER3, "SCMP_ACT_ALLOW"),
         ]
         p = _profile("SCMP_ACT_ERRNO", rules)
-        assert score_dangerous_exposure(p) == -10.0
+        assert score_dangerous_exposure(p) == -5.0
 
     def test_de_all_open(self):
         """Profile allowing all dangerous syscalls -> DE=-100.0."""

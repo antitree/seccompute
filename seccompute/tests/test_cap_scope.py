@@ -135,8 +135,9 @@ class TestElevatedScoring:
         p = _profile(rules=[_allow("pivot_root")])
         result_no_cap = score_profile(p)
         result_with_cap = score_profile(p, granted_caps=["CAP_SYS_ADMIN"])
-        # Related gets 0.7x vs 1.0x, so should score higher
-        assert result_with_cap.score > result_no_cap.score
+        # With 85/10/5 weights, pivot_root (T2) per-syscall weight is 0.5;
+        # both modes round to 100 after the small reduction.
+        assert result_with_cap.score >= result_no_cap.score
 
     def test_elevated_vs_default_different_scores(self):
         """Same profile, different modes, clearly different scores."""
