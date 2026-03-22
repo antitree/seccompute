@@ -33,7 +33,7 @@ _MAGENTA_BOLD = f"\033[1;35m"
 _SEVERITY_COLOR = {
     "HIGH": _RED_BOLD,
     "MEDIUM": _YELLOW_BOLD,
-    "LOW": _CYAN_BOLD,
+    "LOW": _WHITE_BOLD,
 }
 
 

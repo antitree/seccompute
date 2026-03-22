@@ -18,7 +18,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .scoring import ScoringResult, score_profile
-from .viz import render_combo_warning
 
 
 def _serialize_result(result: ScoringResult) -> dict:
@@ -150,6 +149,7 @@ def _format_text(result: ScoringResult) -> str:
 
     # 1. Combo bypass visualizations at the top
     if result.combo_findings:
+        from .viz import render_combo_warning
         for cf in result.combo_findings:
             lines.append(render_combo_warning(cf, style=4))
 

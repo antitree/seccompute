@@ -14,6 +14,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# viz: terminal rendering (ANSI). Add heavy deps here when adopted (e.g. rich, textual).
+viz = []
+# cli: reserved for future CLI-only deps (e.g. click, typer)
+cli = []
+# full: everything
+full = ["seccompute[viz,cli]"]
 dev = ["pytest>=7.0", "PyYAML>=6.0"]
 
 [project.scripts]

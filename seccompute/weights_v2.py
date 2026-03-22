@@ -15,9 +15,9 @@ WEIGHTS_PACK_V2 = "threat_v2"
 
 TOTAL_KNOWN_SYSCALLS = 462
 
-TIER1_BUDGET = 60
-TIER2_BUDGET = 30
-TIER3_BUDGET = 10
+TIER1_BUDGET = 85
+TIER2_BUDGET = 10
+TIER3_BUDGET = 5
 
 TIER1: list[str] = [
     "bpf", "ptrace", "kexec_load", "kexec_file_load",
