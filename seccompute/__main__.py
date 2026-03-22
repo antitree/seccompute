@@ -18,6 +18,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .scoring import ScoringResult, score_profile
+from .viz import render_combo_warning
 
 
 def _serialize_result(result: ScoringResult) -> dict:
@@ -214,10 +215,7 @@ def _format_text(result: ScoringResult) -> str:
     if result.combo_findings:
         lines.append("Combo Findings (emergent risk):")
         for cf in result.combo_findings:
-            lines.append(f"  [{cf.severity}] {cf.name}")
-            lines.append(f"    Triggered by: {', '.join(cf.triggered_by)}")
-            if cf.bypasses_blocked:
-                lines.append(f"    Bypasses blocked: {', '.join(cf.bypasses_blocked)}")
+            lines.append(render_combo_warning(cf, style=4))
         lines.append("")
 
     if result.warnings:
@@ -418,11 +416,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(_format_text(result))
 
-    # Warnings to stderr
-    for w in result.warnings:
+    # Combo warnings to stderr with rich viz
+    for cf in result.combo_findings:
+        print(render_combo_warning(cf, style=4), file=sys.stderr)
+
+    # Other warnings to stderr
+    non_combo_warnings = [w for w in result.warnings if not w.startswith("COMBO ")]
+    for w in non_combo_warnings:
         print(f"WARNING: {w}", file=sys.stderr)
 
-    if result.warnings:
+    if result.warnings or result.combo_findings:
         return 2
     return 0
 

@@ -31,6 +31,15 @@ seccompute profile.json
 pip install seccompute
 ```
 
+## Combo Bypass Visualization
+
+When a profile allows syscall combinations that bypass seccomp restrictions, seccompute renders ANSI-colored attack chain diagrams showing the bypass path, attack vector, and remediation steps:
+
+```bash
+seccompute profile.json
+```
+
+Run `python examples/viz_demo.py` to preview visualization styles.
 ## Development
 
 ```bash
