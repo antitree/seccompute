@@ -22,6 +22,25 @@ pip install git+https://github.com/antitree/seccompute@v2.0.1
 seccompute profile.json
 ```
 
+## Combo Bypass Visualization
+
+When a profile allows syscall combinations that bypass seccomp restrictions (e.g., `io_uring` bypassing blocked network syscalls), seccompute renders rich ANSI-colored attack chain diagrams in text output mode:
+
+```bash
+seccompute --format text profile.json
+```
+
+Three visualization styles are available via the `seccompute.viz` module:
+
+```python
+from seccompute.viz import render_combo_warning
+print(render_combo_warning(combo, style=1))  # attack chain
+print(render_combo_warning(combo, style=2))  # hacker terminal
+print(render_combo_warning(combo, style=3))  # security report
+```
+
+Run `python examples/viz_demo.py` to preview all styles.
+
 ## Development
 
 ```bash
