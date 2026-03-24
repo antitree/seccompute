@@ -1,6 +1,6 @@
 # seccompute
 
-Seccomp profile hardening score engine. Scores OCI seccomp profiles 0–100 where 100 = maximally hardened.
+OCI Seccomp profile hardening score engine. CLI and python module that helps assess and score seccomp profiles for common flaws, bypasses, and general hardiness.
 
 ## Install
 
@@ -10,14 +10,30 @@ pip install seccompute
 
 ## Quickstart
 
-Score a profile file from the CLI:
-
 ```bash
-seccompute profile.json            # JSON output
-seccompute profile.json --grade    # letter-grade visualization
+seccompute - --grade << 'EOF'
+{
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "syscalls": [
+    {
+      "names": ["socket", "bind", "listen", "accept", "accept4", "connect",
+                "sendto", "sendmsg", "sendmmsg", "recvfrom", "recvmsg", "recvmmsg"],
+      "action": "SCMP_ACT_ERRNO",
+    }
+  ]
+}
+EOF
 ```
 
-Or use the Python API:
+score a seccomp file:
+
+```bash
+seccompute examples/example.json                                      # JSON output
+seccompute examples/example.json --grade                              # letter-grade visualization
+seccompute examples/profile3-network-blocked-iouring-bypass.yaml      # YAML profile
+```
+
+use the Python API:
 
 ```python
 from seccompute import score_profile
@@ -34,7 +50,79 @@ print(result.score)   # e.g. 98
 print(result.grade)   # e.g. "A"
 ```
 
+## CLI reference
+
+```
+seccompute [profile] [options]
+
+input / modes:
+  profile           Path to seccomp profile (JSON or YAML), or - for stdin
+  --arch ARCH       Target architecture (default: SCMP_ARCH_X86_64)
+  --min-score N     Exit 2 if score is below N (for CI gates)
+  --compare-docker  Compare profile against Docker/Moby default seccomp allowlist
+  --rules DIR       Directory with custom rule files; missing files fall back to built-ins
+
+output:
+  --grade           Show letter-grade visualization (ANSI color)
+  --format FORMAT   Output format: json (default) or text
+  --json            Shorthand for --format json
+  --verbose         Per-syscall details to stderr
+```
+
+### Custom rules
+
+Point `--rules` at a directory containing any of `syscall_rules.yaml`, `combo_rules.yaml`, or `conditional_rules.yaml`. Missing files fall back to the built-ins automatically. See [docs/RULES.md](docs/RULES.md) for the full format reference.
+
+```bash
+seccompute profile.json --rules ./my-rules/
+```
+
+Can also be set via environment variable:
+
+```bash
+SECCOMPUTE_RULES_DIR=./my-rules seccompute profile.json
+```
+
+### Python API
+
+```python
+from seccompute import score_profile
+
+result = score_profile(profile_dict)                        # built-in rules
+result = score_profile(profile_dict, rules_dir="./my-rules") # custom rules
+result = score_profile(profile_dict, arch="SCMP_ARCH_ARM64")
+
+result.score   # int 0-100
+result.grade   # "A" through "F"
+result.forced_failure         # bool
+result.forced_failure_reasons # list[str]
+result.tier_findings          # per-syscall deductions
+result.combo_findings         # bypass chain detections
+```
+
+
 ## Output
+
+## Scoring model
+
+| Tier | Examples | Max deduction |
+|------|----------|---------------|
+| T1 — critical | `bpf`, `ptrace`, `init_module` | 7+ pts each |
+| T2 — high | `io_uring_*`, `perf_event_open` | 0.5 pts each |
+| T3 — medium | `clone`, `chroot`, `mount` | 0.1–0.2 pts each |
+
+A profile exposing any T1 syscall receives a forced **F** regardless of total score. Combo findings (e.g. io_uring bypass chains) are reported separately and do not affect the numeric score.
+
+## Combo Bypass Detection
+
+When a profile allows syscall combinations that bypass seccomp restrictions, seccompute reports attack chain details — the bypass path, bypassed syscalls, and CVE/technique references:
+
+```
+[HIGH] io_uring network bypass: io_uring_setup, io_uring_enter
+       bypasses: accept, bind, connect, socket, send, recv, ...
+       refs: TECHNIQUE-io-uring-escape, CVE-2023-2598, CVE-2024-0582
+```
+
 
 ### `--grade` visualization
 
@@ -82,48 +170,9 @@ seccompute profile.json
 }
 ```
 
-## Scoring model
-
-| Tier | Examples | Max deduction |
-|------|----------|---------------|
-| T1 — critical | `bpf`, `ptrace`, `init_module` | 7+ pts each |
-| T2 — high | `io_uring_*`, `perf_event_open` | 0.5 pts each |
-| T3 — medium | `clone`, `chroot`, `mount` | 0.1–0.2 pts each |
-
-A profile exposing any T1 syscall receives a forced **F** regardless of total score. Combo findings (e.g. io_uring bypass chains) are reported separately and do not affect the numeric score.
-
-## Combo Bypass Detection
-
-When a profile allows syscall combinations that bypass seccomp restrictions, seccompute reports attack chain details — the bypass path, bypassed syscalls, and CVE/technique references:
-
-```
-[HIGH] io_uring network bypass: io_uring_setup, io_uring_enter
-       bypasses: accept, bind, connect, socket, send, recv, ...
-       refs: TECHNIQUE-io-uring-escape, CVE-2023-2598, CVE-2024-0582
-```
-
-## CLI reference
-
-```
-seccompute [profile] [options]
-
-  --grade           Letter-grade visualization (ANSI color)
-  --json            Shorthand for --format json
-  --format text     Plain text summary
-  --arch ARCH       Target architecture (default: from profile)
-  --min-score N     Exit 2 if score < N (use in CI)
-  --compare-docker  Show delta vs Docker default seccomp allowlist
-  --verbose         Per-syscall details to stderr
-```
-
-## Development
+## Testing / Development
 
 ```bash
 pip install -e ".[dev]"
 pytest -q
-```
-
-## Docs
-
-- Release process: `docs/releasing.md`
-- Example profiles: `examples/`
+``

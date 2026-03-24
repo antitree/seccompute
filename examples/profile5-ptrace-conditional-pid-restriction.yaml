@@ -1,0 +1,117 @@
+# Profile 5 (YAML): Allows ptrace with conditional argument filters attempting to
+# restrict it to specific operations and PIDs.
+#
+# Why these conditionals are INEFFECTIVE:
+#   1. PTRACE_TRACEME (request=0): the child calls this on itself, inviting the parent
+#      to trace it. Allowing it still establishes a ptrace relationship.
+#   2. Filtering on pid argument (arg[1]) is not reliable — TOCTOU race exists between
+#      seccomp check and kernel ptrace_attach.
+#   3. seccomp argument filters on ptrace pid do NOT verify the target is in the same
+#      container — the pid could refer to a host process.
+#
+# Expected scoring behavior:
+#   - ptrace is "conditional" (has args filter), not "blocked"
+#   - Conditional multiplier: 0.5x penalty
+#   - Still penalizes heavily — conditional Tier 1 is not a safe pattern
+
+defaultAction: SCMP_ACT_ERRNO
+architectures:
+  - SCMP_ARCH_X86_64
+  - SCMP_ARCH_X86
+  - SCMP_ARCH_X32
+
+syscalls:
+  # Standard safe syscalls
+  - names:
+      - read
+      - write
+      - open
+      - openat
+      - close
+      - stat
+      - fstat
+      - lstat
+      - lseek
+      - mmap
+      - mprotect
+      - munmap
+      - brk
+      - execve
+      - exit
+      - exit_group
+      - fork
+      - vfork
+      - wait4
+      - waitid
+      - getpid
+      - getppid
+      - gettid
+      - rt_sigaction
+      - rt_sigprocmask
+      - rt_sigreturn
+      - kill
+      - tgkill
+      - nanosleep
+      - pipe
+      - pipe2
+      - dup
+      - dup2
+      - socket
+      - connect
+      - bind
+      - listen
+      - accept
+      - accept4
+      - send
+      - sendto
+      - recv
+      - recvfrom
+      - futex
+      - getcwd
+      - chdir
+      - getuid
+      - getgid
+      - prctl
+      - capget
+      - uname
+      - getrandom
+      - seccomp
+    action: SCMP_ACT_ALLOW
+
+  # CONDITIONAL: ptrace allowed only for PTRACE_TRACEME (request=0).
+  # Allows a child process to invite its parent to trace it.
+  # Security note: still establishes a ptrace relationship — not safe in containers.
+  - names:
+      - ptrace
+    action: SCMP_ACT_ALLOW
+    args:
+      - index: 0
+        value: 0
+        op: SCMP_CMP_EQ  # request == PTRACE_TRACEME (0)
+
+  # CONDITIONAL: ptrace for PTRACE_ATTACH (16) targeting only PID 1.
+  # Attempted PID confinement — does not work reliably (see comments above).
+  - names:
+      - ptrace
+    action: SCMP_ACT_ALLOW
+    args:
+      - index: 0
+        value: 16
+        op: SCMP_CMP_EQ  # request == PTRACE_ATTACH (16)
+      - index: 1
+        value: 1
+        op: SCMP_CMP_EQ  # pid == 1 (ineffective confinement)
+
+  # CONDITIONAL: ptrace for PTRACE_PEEKDATA/POKEDATA on PID <= 100.
+  # Attempting to limit ptrace to "low" PIDs assumed container-internal.
+  # SCMP_CMP_LE on pid is not a security boundary — attacker can wait for PID reuse.
+  - names:
+      - ptrace
+    action: SCMP_ACT_ALLOW
+    args:
+      - index: 0
+        value: 5
+        op: SCMP_CMP_LE  # request <= PTRACE_POKEDATA (5)
+      - index: 1
+        value: 100
+        op: SCMP_CMP_LE  # pid <= 100 (ineffective)

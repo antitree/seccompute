@@ -2,8 +2,11 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+
+_EXAMPLES = Path(__file__).parent.parent / "examples"
 
 _MINIMAL_PROFILE = json.dumps({
     "defaultAction": "SCMP_ACT_ERRNO",
@@ -84,3 +87,67 @@ class TestCLIEdgeCases:
     def test_nonexistent_file_fails(self):
         r = _run(["--json", "/nonexistent/file.json"])
         assert r.returncode == 1
+
+
+class TestYAML:
+    _MINIMAL_YAML = """\
+defaultAction: SCMP_ACT_ERRNO
+syscalls:
+  - names: [read, write, exit, exit_group]
+    action: SCMP_ACT_ALLOW
+"""
+
+    _INVALID_YAML = "defaultAction: [\nunclosed bracket"
+
+    def test_stdin_yaml(self):
+        r = _run(["--json"], self._MINIMAL_YAML)
+        assert r.returncode == 0
+        data = json.loads(r.stdout)
+        assert "score" in data
+        assert "grade" in data
+
+    def test_stdin_yaml_output_schema(self):
+        r = _run(["--json"], self._MINIMAL_YAML)
+        data = json.loads(r.stdout)
+        assert data["schema_version"] == "1.0"
+        assert "tier_summary" in data
+        assert "metadata" in data
+
+    def test_stdin_invalid_yaml_fails(self):
+        r = _run(["--json"], self._INVALID_YAML)
+        assert r.returncode == 1
+
+    def test_file_yaml_iouring_bypass(self):
+        f = _EXAMPLES / "profile3-network-blocked-iouring-bypass.yaml"
+        r = _run(["--json", str(f)])
+        assert r.returncode == 0
+        data = json.loads(r.stdout)
+        combo_ids = [c["id"] for c in data.get("combo_findings", [])]
+        assert "COMBO-io-uring-network-bypass" in combo_ids
+
+    def test_file_yaml_ptrace_conditional(self):
+        f = _EXAMPLES / "profile5-ptrace-conditional-pid-restriction.yaml"
+        r = _run(["--json", str(f)])
+        assert r.returncode == 0
+        data = json.loads(r.stdout)
+        # Conditional ptrace (args filter) is penalized but does not force F
+        assert data["score"] < 100
+        t1_syscalls = [
+            t["syscall"] for t in data.get("tier_findings", []) if t["tier"] == 1
+        ]
+        assert "ptrace" in t1_syscalls
+
+    def test_yaml_and_json_same_score(self, tmp_path):
+        """YAML and JSON representations of the same profile must score identically."""
+        json_profile = json.dumps({
+            "defaultAction": "SCMP_ACT_ERRNO",
+            "syscalls": [{"names": ["read", "write"], "action": "SCMP_ACT_ALLOW"}],
+        })
+        yaml_profile = "defaultAction: SCMP_ACT_ERRNO\nsyscalls:\n  - names: [read, write]\n    action: SCMP_ACT_ALLOW\n"
+
+        r_json = _run(["--json"], json_profile)
+        r_yaml = _run(["--json"], yaml_profile)
+
+        assert r_json.returncode == 0
+        assert r_yaml.returncode == 0
+        assert json.loads(r_json.stdout)["score"] == json.loads(r_yaml.stdout)["score"]

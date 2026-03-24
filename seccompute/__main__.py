@@ -101,18 +101,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="seccompute",
         description="Score a seccomp profile on a 0-100 hardening scale.",
     )
+
     parser.add_argument("profile", nargs="?", default="-", help="Path to seccomp profile (JSON or YAML), or - for stdin")
-    parser.add_argument("--arch", default="SCMP_ARCH_X86_64", help="Target architecture")
-    parser.add_argument("--format", choices=["json", "text"], default="json", help="Output format")
-    parser.add_argument("--min-score", type=int, default=None, help="Minimum score threshold (exit 2 if below)")
-    parser.add_argument("--grade", action="store_true", help="Show graded visualization")
-    parser.add_argument("--json", action="store_true", dest="json_shorthand", help="Shorthand for --format json")
-    parser.add_argument("--verbose", action="store_true", help="Per-syscall details to stderr")
-    parser.add_argument(
-        "--compare-docker",
-        action="store_true",
-        help="Compare profile against Docker/Moby default seccomp allowlist and show delta",
-    )
+    parser.add_argument("--arch", default="SCMP_ARCH_X86_64", help="Target architecture (default: SCMP_ARCH_X86_64)")
+    parser.add_argument("--min-score", type=int, default=None, metavar="N", help="Exit 2 if score is below N (for CI gates)")
+    parser.add_argument("--compare-docker", action="store_true", help="Compare profile against Docker/Moby default seccomp allowlist and show delta")
+    parser.add_argument("--rules", default=None, metavar="DIR", help="Directory containing custom rule files (syscall_rules.yaml, combo_rules.yaml, conditional_rules.yaml); falls back to built-ins for any file not present")
+
+    output = parser.add_argument_group("output")
+    output.add_argument("--grade", action="store_true", help="Show letter-grade visualization (ANSI color)")
+    output.add_argument("--format", choices=["json", "text"], default="json", help="Output format (default: json)")
+    output.add_argument("--json", action="store_true", dest="json_shorthand", help="Shorthand for --format json")
+    output.add_argument("--verbose", action="store_true", help="Per-syscall details to stderr")
+
     ns = parser.parse_args(argv)
     if ns.json_shorthand:
         ns.format = "json"
@@ -239,8 +240,16 @@ def main(argv: list[str] | None = None) -> int:
         try:
             raw_data = json.loads(raw)
             if not isinstance(raw_data, dict):
-                raise ValueError("Profile must be a JSON object")
-        except (json.JSONDecodeError, ValueError) as e:
+                raise ValueError("Profile must be a JSON or YAML object")
+        except json.JSONDecodeError:
+            try:
+                raw_data = yaml.safe_load(raw)
+                if not isinstance(raw_data, dict):
+                    raise ValueError("Profile must be a JSON or YAML object")
+            except yaml.YAMLError as e:
+                print(f"Error: could not parse stdin as JSON or YAML: {e}", file=sys.stderr)
+                return 1
+        except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
     else:
@@ -276,7 +285,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    result = score_profile(profile, arch=args.arch)
+    rules_dir = None
+    if args.rules is not None:
+        rules_path = Path(args.rules)
+        if not rules_path.is_dir():
+            print(f"Error: --rules must be a directory, got: {args.rules}", file=sys.stderr)
+            return 1
+        rules_dir = str(rules_path)
+
+    result = score_profile(profile, arch=args.arch, rules_dir=rules_dir)
 
     # Merge validation warnings into the result's warning list so they
     # appear in both JSON and text output without requiring a separate channel.

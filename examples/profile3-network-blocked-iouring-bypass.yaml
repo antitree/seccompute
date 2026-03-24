@@ -1,0 +1,121 @@
+# Profile 3 (YAML): Blocks all network syscalls but ALLOWS io_uring.
+#
+# Security issue this demonstrates:
+#   io_uring can perform network I/O (connect, send, recv, accept) via IORING_OP_* opcodes
+#   WITHOUT directly calling the blocked socket syscalls. The seccomp filter sees only
+#   io_uring_enter, not the underlying network operation, so the network block is bypassed.
+#
+#   Reference: TECHNIQUE-io-uring-escape
+#   "io_uring bypasses seccomp filters entirely for registered operations"
+#
+# Expected scoring behavior:
+#   - Network syscalls blocked: coverage credit given
+#   - io_uring allowed: Tier 2 (0.5 pts each x3 = 1.5 pt exposure)
+#   - Score should flag io_uring combo bypass despite network blocks
+#   - This is a MISLEADING profile: it looks network-hardened but isn't
+
+defaultAction: SCMP_ACT_ERRNO
+architectures:
+  - SCMP_ARCH_X86_64
+  - SCMP_ARCH_X86
+  - SCMP_ARCH_X32
+
+syscalls:
+  # Standard safe syscalls allowed
+  - names:
+      - read
+      - write
+      - open
+      - openat
+      - close
+      - stat
+      - fstat
+      - lstat
+      - lseek
+      - mmap
+      - mprotect
+      - munmap
+      - brk
+      - execve
+      - exit
+      - exit_group
+      - fork
+      - vfork
+      - wait4
+      - waitid
+      - getpid
+      - getppid
+      - gettid
+      - rt_sigaction
+      - rt_sigprocmask
+      - rt_sigreturn
+      - kill
+      - tgkill
+      - nanosleep
+      - pipe
+      - pipe2
+      - dup
+      - dup2
+      - dup3
+      - poll
+      - ppoll
+      - select
+      - pselect6
+      - epoll_create
+      - epoll_create1
+      - epoll_ctl
+      - epoll_wait
+      - epoll_pwait
+      - futex
+      - set_robust_list
+      - get_robust_list
+      - set_tid_address
+      - getcwd
+      - chdir
+      - madvise
+      - prctl
+      - capget
+      - capset
+      - getuid
+      - getgid
+      - geteuid
+      - getegid
+      - uname
+      - getrandom
+      - seccomp
+    action: SCMP_ACT_ALLOW
+
+  # EXPLICITLY BLOCKED: All network syscalls.
+  # Intended to prevent network access — but bypassed by io_uring below.
+  - names:
+      - socket
+      - socketpair
+      - connect
+      - bind
+      - listen
+      - accept
+      - accept4
+      - send
+      - sendto
+      - sendmsg
+      - sendmmsg
+      - recv
+      - recvfrom
+      - recvmsg
+      - recvmmsg
+      - shutdown
+      - getsockname
+      - getpeername
+      - getsockopt
+      - setsockopt
+    action: SCMP_ACT_ERRNO
+
+  # INTENTIONALLY ALLOWED: io_uring — BYPASSES the network blocks above.
+  # io_uring_enter with IORING_OP_CONNECT, IORING_OP_ACCEPT, IORING_OP_SEND,
+  # IORING_OP_RECV can perform all the blocked network operations.
+  # seccomp sees only io_uring_enter, not the underlying operation.
+  - names:
+      - io_uring_setup
+      - io_uring_enter
+      - io_uring_register
+    action: SCMP_ACT_ALLOW
