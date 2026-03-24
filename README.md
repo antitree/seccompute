@@ -25,30 +25,13 @@ seccompute - --grade << 'EOF'
 EOF
 ```
 
-score a seccomp file:
+**Grade A — tight profile with io_uring bypass risk:**
 
-```bash
-seccompute examples/example.json                                      # JSON output
-seccompute examples/example.json --grade                              # letter-grade visualization
-seccompute examples/profile3-network-blocked-iouring-bypass.yaml      # YAML profile
-```
+![Grade A output](docs/grade_a_output.svg)
 
-use the Python API:
+**Grade F — permissive profile with T1 syscalls exposed:**
 
-```python
-from seccompute import score_profile
-
-profile = {
-    "defaultAction": "SCMP_ACT_ERRNO",
-    "syscalls": [
-        {"names": ["read", "write", "exit"], "action": "SCMP_ACT_ALLOW"}
-    ]
-}
-
-result = score_profile(profile)
-print(result.score)   # e.g. 98
-print(result.grade)   # e.g. "A"
-```
+![Grade F output](docs/grade_f_output.svg)
 
 ## CLI reference
 
@@ -69,39 +52,41 @@ output:
   --verbose         Per-syscall details to stderr
 ```
 
-### Custom rules
+## Examples
 
-Point `--rules` at a directory containing any of `syscall_rules.yaml`, `combo_rules.yaml`, or `conditional_rules.yaml`. Missing files fall back to the built-ins automatically. See [docs/RULES.md](docs/RULES.md) for the full format reference.
-
-```bash
-seccompute profile.json --rules ./my-rules/
-```
-
-Can also be set via environment variable:
+CLI:
 
 ```bash
-SECCOMPUTE_RULES_DIR=./my-rules seccompute profile.json
+seccompute examples/example.json                                      # JSON output
 ```
 
-### Python API
+```bash
+seccompute examples/example.json --grade                              # letter-grade visualization
+```
+
+```bash
+seccompute examples/profile3-network-blocked-iouring-bypass.yaml      # YAML profile
+```
+
+Python API:
 
 ```python
 from seccompute import score_profile
 
-result = score_profile(profile_dict)                        # built-in rules
-result = score_profile(profile_dict, rules_dir="./my-rules") # custom rules
-result = score_profile(profile_dict, arch="SCMP_ARCH_ARM64")
+profile = {
+    "defaultAction": "SCMP_ACT_ERRNO",
+    "syscalls": [
+        {"names": ["read", "write", "exit"], "action": "SCMP_ACT_ALLOW"}
+    ]
+}
 
-result.score   # int 0-100
-result.grade   # "A" through "F"
-result.forced_failure         # bool
-result.forced_failure_reasons # list[str]
-result.tier_findings          # per-syscall deductions
-result.combo_findings         # bypass chain detections
+result = score_profile(profile)
+print(result.score)   # e.g. 98
+print(result.grade)   # e.g. "A"
 ```
 
 
-## Output
+# Multi-Dimensional Scoring and Combo Bypasses
 
 ## Scoring model
 
@@ -111,7 +96,7 @@ result.combo_findings         # bypass chain detections
 | T2 — high | `io_uring_*`, `perf_event_open` | 0.5 pts each |
 | T3 — medium | `clone`, `chroot`, `mount` | 0.1–0.2 pts each |
 
-A profile exposing any T1 syscall receives a forced **F** regardless of total score. Combo findings (e.g. io_uring bypass chains) are reported separately and do not affect the numeric score.
+A profile exposing any T1 syscall receives a forced **F** regardless of total score. Combo findings (e.g. io_uring bypass chains) are reported separately and do not affect the numeric score. 
 
 ## Combo Bypass Detection
 
@@ -123,56 +108,8 @@ When a profile allows syscall combinations that bypass seccomp restrictions, sec
        refs: TECHNIQUE-io-uring-escape, CVE-2023-2598, CVE-2024-0582
 ```
 
-
-### `--grade` visualization
-
-The `--grade` flag renders a color-coded hardening report with tier breakdown, combo risks, and exposed syscalls.
-
-**Grade A — tight profile with io_uring bypass risk:**
-
-![Grade A output](docs/grade_a_output.svg)
-
-**Grade F — permissive profile with T1 syscalls exposed:**
-
-![Grade F output](docs/grade_f_output.svg)
-
-### JSON output (default)
-
-```bash
-seccompute profile.json
-```
-
-```json
-{
-  "schema_version": "1.0",
-  "score": 98,
-  "grade": "A",
-  "forced_failure": false,
-  "tier_summary": {
-    "t1_exposed": 0,
-    "t2_exposed": 3,
-    "t3_exposed": 0
-  },
-  "combo_findings": [
-    {
-      "id": "COMBO-io-uring-network-bypass",
-      "name": "io_uring network bypass",
-      "severity": "HIGH",
-      "triggered_by": ["io_uring_setup", "io_uring_enter"],
-      "bypasses_blocked": ["accept", "bind", "connect", "socket", "..."]
-    }
-  ],
-  "tier_findings": [ "..." ],
-  "metadata": {
-    "engine_version": "3.0.0",
-    "arch": "SCMP_ARCH_X86_64"
-  }
-}
-```
-
-## Testing / Development
-
-```bash
-pip install -e ".[dev]"
-pytest -q
-``
+### More Information
+* More details: See [DETAILS.md](docs/DETAILS.md)
+* Custom Roles: See [RULES.md](docs/RULES.md)
+* Original Spec: See [SPEC.md](docs/SPEC.md)
+* Original Prompt(Rebuild it in Rust for all I care): See [PROMPT.md](docs/PROMPT.md)
