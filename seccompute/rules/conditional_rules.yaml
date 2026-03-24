@@ -1,0 +1,30 @@
+# Conditional Rules -- Informational context about how syscalls are gated
+#
+# These produce ConditionalFinding entries in the output. They do not
+# affect the numeric score (the state resolution already accounts for
+# conditionals in the multiplier). They exist for informational value.
+
+conditionals:
+  - syscall: "clone"
+    condition: "argument_filter"
+    description: "clone with CLONE_NEWUSER flag creates user namespaces for privilege escalation"
+
+  - syscall: "clone3"
+    condition: "argument_filter"
+    description: "clone3 with set_tid/cgroup fields can escape namespace boundaries"
+
+  - syscall: "ptrace"
+    condition: "capability_gate"
+    description: "ptrace gated by CAP_SYS_PTRACE limits but does not eliminate cross-process risk"
+
+  - syscall: "bpf"
+    condition: "capability_gate"
+    description: "bpf gated by CAP_BPF/CAP_SYS_ADMIN limits but eBPF verifier bypasses remain possible"
+
+  - syscall: "unshare"
+    condition: "argument_filter"
+    description: "unshare with CLONE_NEWUSER creates user namespace for capability escalation"
+
+  - syscall: "mount"
+    condition: "capability_gate"
+    description: "mount gated by CAP_SYS_ADMIN limits filesystem manipulation scope"

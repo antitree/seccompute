@@ -1,197 +1,278 @@
-"""Core scoring engine for seccomp profiles.
+"""Core scoring engine for seccompute.
 
-Computes an absolute hardening score (0-100) where:
-  0 = maximally permissive (all dangerous syscalls allowed)
-  100 = maximally hardened (all dangerous syscalls blocked)
-
-Score = 100 - sum(allowed_syscall_weights), where:
-  - Unconditionally allowed syscalls: 1.0x weight penalty
-  - Conditionally allowed syscalls: 0.5x weight penalty
-  - Blocked syscalls: 0.0x weight penalty
-
-Per-syscall weight = tier_budget / count(syscalls_in_tier):
-  - Tier 1 (budget 60): catastrophic (kernel code exec, container escape)
-  - Tier 2 (budget 30): serious (namespace/filesystem escape)
-  - Tier 3 (budget 10): elevated (contextual risk, DoS)
+Orchestrates the scoring pipeline: load rules, resolve states, compute score,
+detect combos, apply grading and forced-failure logic.
 """
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
 from typing import Any
 
-from .combos import ComboFinding, evaluate_combos
-from .intent import IntentBlock, load_intent
-from .correctness import CorrectnessDetail, compute_correctness
-from .conditionals import ConditionalNote, analyze_conditionals, resolve_effective_state
-from .known_syscalls import KNOWN_LINUX_SYSCALLS
-from .rules import get_all_rules, get_tier
-from .cap_scope import get_scope_for_caps
-from .weights_v2 import (
-    ALL_DANGEROUS_V2,
-    TIER1, TIER1_BUDGET,
-    TIER2, TIER2_BUDGET,
-    TIER3, TIER3_BUDGET,
-    tier_weight,
+from .combos import evaluate_combos
+from .conditionals import analyze_conditionals, resolve_effective_states
+from .grader import check_forced_failure, compute_grade
+from .model import (
+    ENGINE_VERSION,
+    SCHEMA_VERSION,
+    ComboFinding,
+    ConditionalFinding,
+    ScoringResult,
+    TierFinding,
 )
+from .rules import load_all_rules
+from .tiers import TIER_BUDGETS, build_tiers, build_weights, get_all_dangerous
 
-ENGINE_VERSION = "2.0.0"
+# Arch-specific prefixes that some profile generators emit.
+# Strip these before any lookup so "I386.read" → "read", "x32.mmap" → "mmap".
+_ARCH_PREFIXES = ("I386.x32.", "I386.", "x32.")
 
-# State multipliers for absolute scoring
-_STATE_MULTIPLIER: dict[str, float] = {
+
+def _strip_arch_prefix(name: str) -> str:
+    """Strip architecture namespace prefixes from a syscall name."""
+    for prefix in _ARCH_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+# Known safe syscalls that should not generate unknown warnings.
+# Includes 64-bit canonical names plus common 32-bit aliases and arch-specific
+# variants that appear in real-world profiles from the Docker/Moby dataset.
+_KNOWN_SAFE: frozenset[str] = frozenset([
+    # --- Standard 64-bit syscalls ---
+    "read", "write", "open", "close", "stat", "fstat", "lstat", "poll",
+    "lseek", "mmap", "mprotect", "munmap", "brk", "ioctl", "access",
+    "pipe", "select", "sched_yield", "mremap", "msync", "mincore",
+    "madvise", "shmget", "shmat", "shmctl", "dup", "dup2", "dup3",
+    "pause", "nanosleep", "getitimer", "alarm", "setitimer", "getpid",
+    "sendfile", "socket", "connect", "accept", "sendto", "recvfrom",
+    "sendmsg", "recvmsg", "shutdown", "bind", "listen", "getsockname",
+    "getpeername", "socketpair", "setsockopt", "getsockopt", "fork",
+    "vfork", "execve", "exit", "wait4", "kill", "uname", "semget",
+    "semop", "semctl", "shmdt", "msgget", "msgsnd", "msgrcv", "msgctl",
+    "fcntl", "flock", "fsync", "fdatasync", "truncate", "ftruncate",
+    "getdents", "getcwd", "chdir", "fchdir", "rename", "mkdir", "rmdir",
+    "creat", "link", "unlink", "symlink", "readlink", "chmod", "fchmod",
+    "chown", "fchown", "lchown", "umask", "gettimeofday", "getrlimit",
+    "getrusage", "sysinfo", "times", "getuid", "getgid", "setuid",
+    "setgid", "geteuid", "getegid", "setpgid", "getppid", "getpgrp",
+    "setsid", "setreuid", "setregid", "getgroups", "setgroups",
+    "setresuid", "getresuid", "setresgid", "getresgid", "getpgid",
+    "setfsuid", "setfsgid", "getsid", "capget", "capset",
+    "rt_sigpending", "rt_sigtimedwait", "rt_sigqueueinfo", "rt_sigsuspend",
+    "sigaltstack", "utime", "mknod", "uselib", "personality", "ustat",
+    "statfs", "fstatfs", "sysfs", "getpriority", "setpriority",
+    "sched_setparam", "sched_getparam", "sched_setscheduler",
+    "sched_getscheduler", "sched_get_priority_max", "sched_get_priority_min",
+    "sched_rr_get_interval", "mlock", "munlock", "mlockall", "munlockall",
+    "prctl", "arch_prctl", "adjtimex", "setrlimit", "sync",
+    "mount_setattr", "gettid", "readahead", "setxattr", "lsetxattr",
+    "fsetxattr", "getxattr", "lgetxattr", "fgetxattr", "listxattr",
+    "llistxattr", "flistxattr", "removexattr", "lremovexattr",
+    "fremovexattr", "tkill", "time", "futex", "sched_setaffinity",
+    "sched_getaffinity", "set_thread_area", "io_setup", "io_destroy",
+    "io_getevents", "io_submit", "io_cancel", "get_thread_area",
+    "lookup_dcookie", "epoll_create", "epoll_ctl_old", "epoll_wait_old",
+    "remap_file_pages", "getdents64", "set_tid_address", "restart_syscall",
+    "semtimedop", "fadvise64", "timer_create", "timer_settime",
+    "timer_gettime", "timer_getoverrun", "timer_delete", "clock_gettime",
+    "clock_getres", "clock_nanosleep", "exit_group", "epoll_wait",
+    "epoll_ctl", "epoll_pwait", "epoll_pwait2", "tgkill", "utimes",
+    "waitid", "set_robust_list", "get_robust_list", "splice", "tee",
+    "sync_file_range", "vmsplice", "fallocate", "timerfd_settime",
+    "timerfd_gettime", "accept4", "signalfd4", "eventfd2",
+    "epoll_create1", "pipe2", "inotify_init1", "preadv", "pwritev",
+    "rt_tgsigqueueinfo", "perf_event_open", "recvmmsg", "fanotify_init",
+    "fanotify_mark", "prlimit64", "name_to_handle_at", "clock_adjtime",
+    "syncfs", "sendmmsg", "setns", "getcpu", "process_vm_readv",
+    "process_vm_writev", "kcmp", "finit_module", "sched_setattr",
+    "sched_getattr", "renameat2", "seccomp", "getrandom", "memfd_create",
+    "bpf", "execveat", "userfaultfd", "membarrier", "mlock2", "copy_file_range",
+    "preadv2", "pwritev2", "pkey_mprotect", "pkey_alloc", "pkey_free",
+    "statx", "io_pgetevents", "rseq", "pidfd_send_signal", "io_uring_setup",
+    "io_uring_enter", "io_uring_register", "open_tree", "move_mount",
+    "fsopen", "fsconfig", "fsmount", "fspick", "pidfd_open",
+    "openat", "openat2", "close_range", "faccessat2", "process_madvise",
+    "epoll_pwait2", "mount_setattr", "quotactl_fd", "landlock_create_ruleset",
+    "landlock_add_rule", "landlock_restrict_self", "memfd_secret",
+    "process_mrelease", "futex_waitv", "set_mempolicy_home_node",
+    "cachestat", "fchmodat2", "map_shadow_stack", "futex_wake",
+    "futex_wait", "futex_requeue", "readlinkat", "newfstatat",
+    "fchownat", "unlinkat", "mkdirat", "mknodat", "fchmodat",
+    "faccessat", "utimensat", "linkat", "symlinkat", "rt_sigaction",
+    "rt_sigprocmask", "rt_sigreturn", "pread64", "pwrite64",
+    "readv", "writev", "ppoll", "pselect6", "signalfd",
+    "timerfd_create", "eventfd", "inotify_init", "inotify_add_watch",
+    "inotify_rm_watch", "pidfd_getfd",
+    # --- 32-bit compat aliases (i386 / arm32 / mips-o32) ---
+    # These are equivalent to their 64-bit counterparts and carry no extra risk.
+    "mmap2", "fcntl64", "stat64", "fstat64", "lstat64", "fstatat64",
+    "statfs64", "fstatfs64", "ftruncate64", "lstat64", "truncate64",
+    "fadvise64_64", "sendfile64", "ugetrlimit",
+    "getuid32", "getgid32", "geteuid32", "getegid32",
+    "getresuid32", "getresgid32", "getgroups32", "setgroups32",
+    "setuid32", "setgid32", "setreuid32", "setregid32",
+    "setresuid32", "setresgid32", "setfsuid32", "setfsgid32",
+    "chown32", "lchown32", "fchown32",
+    # --- POSIX / compat syscalls present in older kernels ---
+    "renameat",       # older rename-at (before renameat2)
+    "futimesat",      # older utimes variant
+    "pread", "pwrite",  # older pread64/pwrite64 aliases
+    "send", "recv",   # older sendto/recvfrom aliases
+    "sigreturn", "_newselect", "_llseek",
+    "waitpid",        # older wait4 alias
+    "ipc",            # multiplexed SysV IPC (older kernels)
+    "socketcall",     # multiplexed socket calls (older kernels / i386)
+    "sigprocmask", "sigpending", "sigsuspend", "sigaction", "signal",
+    "readdir",        # old getdents variant
+    "newuname", "newstat", "newfstat", "newlstat",
+    "fstatat",        # older newfstatat alias
+    "_sysctl",        # removed in 5.5 but still in profiles
+    "get_kernel_syms", "create_module", "query_module",  # legacy module syscalls
+    "nfsservctl",     # removed in 3.1
+    "timerfd",        # old timerfd (before timerfd_create)
+    # --- Arch-specific (ARM, s390, RISC-V) ---
+    "set_tls", "cacheflush", "breakpoint",  # ARM
+    "arm_fadvise64_64", "arm_sync_file_range", "sync_file_range2",  # ARM
+    "swapcontext",    # PowerPC
+    "s390_pci_mmio_read", "s390_pci_mmio_write", "s390_runtime_instr",  # s390
+    "riscv_flush_icache", "riscv_hwprobe",  # RISC-V
+    # --- time64 variants (32-bit kernels / compat) ---
+    "clock_gettime64", "clock_settime64", "clock_adjtime64",
+    "clock_getres_time64", "clock_nanosleep_time64",
+    "timer_gettime64", "timer_settime64",
+    "timerfd_gettime64", "timerfd_settime64",
+    "utimensat_time64", "pselect6_time64", "ppoll_time64",
+    "recvmmsg_time64", "semtimedop_time64", "rt_sigtimedwait_time64",
+    "futex_time64", "sched_rr_get_interval_time64",
+    "mq_timedreceive_time64", "mq_timedsend_time64",
+    "io_pgetevents_time64",
+    # --- POSIX message queues ---
+    "mq_open", "mq_unlink", "mq_timedsend", "mq_timedreceive",
+    "mq_notify", "mq_getsetattr",
+    # --- I/O priority ---
+    "ioprio_set", "ioprio_get",
+    # --- NUMA memory policy (non-dangerous variant) ---
+    "get_mempolicy", "set_mempolicy",
+    # --- Misc legacy / obscure but benign ---
+    "stime",          # set time (very old)
+    "uselib",         # load shared library (ancient)
+    "readdirent",     # old readdir alias
+    "vserver",        # never implemented
+    "afs_syscall", "tuxcall", "security",  # reserved/unimplemented stubs
+    "getpmsg", "putpmsg",  # STREAMS (never implemented on Linux)
+    "vm86", "vm86old",  # VM86 mode (x86 only, benign)
+    "seteuid", "setegid",  # POSIX wrappers (glibc uses setreuid internally)
+    "setpgrp",        # alias for setpgid(0,0)
+    "wait", "wait3",  # old wait variants
+    "lockf",          # POSIX file locking (uses fcntl internally)
+    "mkfifo",         # named pipe creation
+    "raise",          # signal to self
+    "unknown_syscall",  # placeholder in some generated profiles
+    # --- Linux 6.x new syscalls ---
+    "mseal",          # memory sealing (6.10)
+    "listmount",      # list mounts (6.8)
+    "statmount",      # stat mount (6.8)
+    "uretprobe",      # uprobe return (6.8)
+    # xattr-at variants (6.13+)
+    "getxattrat", "setxattrat", "listxattrat", "removexattrat",
+    # LSM attribute syscalls (6.8)
+    "lsm_get_self_attr", "lsm_set_self_attr", "lsm_list_modules",
+])
+
+# State multipliers
+_STATE_MULT: dict[str, float] = {
     "blocked": 0.0,
     "conditional": 0.5,
     "allowed": 1.0,
 }
 
-# Elevated mode: in-scope primary syscalls (justified by declared caps)
-_STATE_MULTIPLIER_INSCOPE_PRIMARY: dict[str, float] = {
-    "blocked": 0.0,
-    "conditional": 0.1,  # tight scoping of an in-scope syscall is good
-    "allowed": 0.4,      # still a deduction but intentional
-}
-
-# Elevated mode: in-scope related syscalls (often needed alongside cap)
-_STATE_MULTIPLIER_INSCOPE_RELATED: dict[str, float] = {
-    "blocked": 0.0,
-    "conditional": 0.3,
-    "allowed": 0.7,
-}
-
-# Default mode: Tier 1 conditional gets 0.75x (not 0.5x -- still very dangerous)
-_TIER1_CONDITIONAL_MULTIPLIER_DEFAULT = 0.75
+# T1 conditional is more dangerous in standard mode
+_T1_CONDITIONAL_MULT = 0.75
 
 
-@dataclass
-class TierScore:
-    """Per-tier scoring breakdown.
+def _extract_annotations(profile: dict) -> tuple[set[str], dict[str, str]]:
+    """Extract x-seccompute annotation overrides.
 
-    Attributes:
-        tier: Tier number (1, 2, or 3).
-        budget: Total points allocated to this tier.
-        total_syscalls: Number of syscalls in this tier.
-        allowed_count: Number unconditionally allowed.
-        conditional_count: Number conditionally allowed.
-        blocked_count: Number blocked.
-        deduction: Points deducted from this tier.
+    Returns (overridden_syscalls, justifications_map).
     """
-    tier: int
-    budget: float
-    total_syscalls: int
-    allowed_count: int = 0
-    conditional_count: int = 0
-    blocked_count: int = 0
-    deduction: float = 0.0
+    x_sec = profile.get("x-seccompute", {})
+    if not isinstance(x_sec, dict):
+        return set(), {}
 
+    overrides: set[str] = set()
+    justifications: dict[str, str] = {}
 
-@dataclass
-class SyscallScore:
-    """Per-syscall scoring detail.
+    # New format: intent.syscalls.<name>.justification
+    intent = x_sec.get("intent", {})
+    if isinstance(intent, dict):
+        syscalls = intent.get("syscalls", {})
+        if isinstance(syscalls, dict):
+            for name, data in syscalls.items():
+                if isinstance(data, dict):
+                    j = data.get("justification", "")
+                    if j:
+                        overrides.add(name)
+                        justifications[name] = j
 
-    Attributes:
-        name: Syscall name.
-        tier: Tier assignment (1-3, or 0 for unknown).
-        state: Effective state (blocked/conditional/allowed).
-        weight: Base weight for this syscall.
-        multiplier: State multiplier applied (0.0/0.5/1.0).
-        deduction: Actual points deducted (weight * multiplier).
-        is_unknown: True if not in syscall_rules.yaml.
-    """
-    name: str
-    tier: int
-    state: str
-    weight: float
-    multiplier: float
-    deduction: float
-    is_unknown: bool = False
+    # Legacy format: allow list
+    allow = x_sec.get("allow", [])
+    if isinstance(allow, list):
+        for name in allow:
+            if isinstance(name, str):
+                overrides.add(name)
 
-
-@dataclass
-class ScoringResult:
-    """Complete scoring result for a seccomp profile.
-
-    Attributes:
-        score: Hardening score 0-100 (100 = maximally hardened).
-        tier_breakdown: Per-tier scoring statistics.
-        syscall_details: Per-syscall scoring details for dangerous syscalls.
-        conditionals: Conditional interpretations applied during scoring.
-        warnings: Unknown syscalls, inconsistencies, or other issues.
-        metadata: Arch, engine version, and other context.
-    """
-    score: int
-    tier_breakdown: dict[str, TierScore]
-    syscall_details: list[SyscallScore]
-    conditionals: list[ConditionalNote]
-    combo_findings: list[ComboFinding]
-    warnings: list[str]
-    metadata: dict[str, Any]
-    granted_caps: list[str] = field(default_factory=list)
-    scoring_mode: str = "default"
-    correctness_score: int | None = None
-    correctness_details: list[CorrectnessDetail] = field(default_factory=list)
-    intent: IntentBlock | None = None
-
-
-def _collect_all_profile_syscalls(profile: dict) -> set[str]:
-    """Collect all syscall names mentioned in a profile's rules."""
-    names: set[str] = set()
-    for rule in profile.get("syscalls", []):
-        names.update(rule.get("names", []))
-    return names
-
-
-def _compute_unknown_weight() -> float:
-    """Compute the conservative weight for unknown syscalls (Tier 2 equivalent)."""
-    if not TIER2:
-        return 0.0
-    return TIER2_BUDGET / len(TIER2)
+    return overrides, justifications
 
 
 def score_profile(
     profile: dict,
+    *,
     arch: str = "SCMP_ARCH_X86_64",
-    granted_caps: list[str] | None = None,
-    intent: IntentBlock | None = None,
+    rules_dir: str | None = None,
 ) -> ScoringResult:
     """Score a seccomp profile on a 0-100 hardening scale.
 
     Args:
-        profile: OCI seccomp profile as a dict.
-        arch: Target architecture (default: SCMP_ARCH_X86_64).
+        profile: OCI seccomp profile dict (already normalized).
+        arch: Target architecture (stored in metadata).
+        rules_dir: Override rules directory. Also settable via SECCOMPUTE_RULES_DIR env.
 
     Returns:
-        ScoringResult with score, breakdown, and details.
+        ScoringResult with score, grade, findings, and metadata.
     """
+    all_rules = load_all_rules(rules_dir)
+    syscall_rules = all_rules["syscalls"]
+    combo_rules_data = all_rules["combos"]
+
+    # Build tier structures
+    tiers = build_tiers(syscall_rules)
+    weights = build_weights(tiers)
+    all_dangerous = get_all_dangerous(tiers)
+    tier1_members = tiers.get(1, [])
+
+    # Collect all syscalls mentioned in the profile, stripping arch prefixes.
+    # Some profile generators emit names like "I386.read" or "x32.mmap".
+    profile_syscalls: set[str] = set()
+    for rule in profile.get("syscalls", []):
+        for name in rule.get("names", []):
+            if isinstance(name, str):
+                profile_syscalls.add(_strip_arch_prefix(name))
+
+    # Detect unknown syscalls
     warnings: list[str] = []
-    all_rules = get_all_rules()
-
-    # Identify all syscalls in the profile
-    profile_syscalls = _collect_all_profile_syscalls(profile)
-
-    # Detect unknown syscalls: only flag names that are not recognized as
-    # real Linux syscalls.  Common syscalls like "read", "write", etc. are
-    # in KNOWN_LINUX_SYSCALLS and must NOT be treated as unknown.
-    unknown_syscalls: set[str] = set()
-    for sc in profile_syscalls:
-        if (sc not in all_rules
-                and sc not in ALL_DANGEROUS_V2
-                and sc not in KNOWN_LINUX_SYSCALLS):
-            unknown_syscalls.add(sc)
-
-    # Only generate warnings for unknown syscalls that are referenced in
-    # allow rules (blocked unknowns are harmless)
-    unknown_weight = _compute_unknown_weight()
-    active_unknowns: set[str] = set()
-
+    unknown_active: set[str] = set()
     default_action = profile.get("defaultAction", "SCMP_ACT_ERRNO")
     permissive_default = default_action in {"SCMP_ACT_ALLOW", "SCMP_ACT_LOG", "SCMP_ACT_TRACE"}
 
-    # Build the set of syscalls to score: all dangerous + unknowns in profile
-    score_set = set(ALL_DANGEROUS_V2)
-
-    # Check which unknowns are effectively allowed
-    for sc in unknown_syscalls:
-        # Determine if this unknown is allowed
+    for sc in profile_syscalls:
+        if sc in all_dangerous or sc in syscall_rules or sc in _KNOWN_SAFE:
+            continue
+        # Skip numeric stubs (hex literals, "syscall452", "syscall_1f4", etc.)
+        # that are artifacts of profile generators and have no known semantics.
+        if re.match(r'^(0x[0-9a-fA-F]+|syscall[_]?[0-9a-fA-F]+)$', sc):
+            continue
+        # Unknown syscall - check if effectively allowed
         explicitly_allowed = False
         explicitly_blocked = False
         for rule in profile.get("syscalls", []):
@@ -204,152 +285,127 @@ def score_profile(
                     explicitly_blocked = True
 
         if explicitly_allowed or (permissive_default and not explicitly_blocked):
-            active_unknowns.add(sc)
-            score_set.add(sc)
+            unknown_active.add(sc)
+            t2_budget = TIER_BUDGETS.get(2, 10.0)
+            t2_count = len(tiers.get(2, []))
+            unknown_weight = t2_budget / t2_count if t2_count else 0.0
             warnings.append(
-                f"Unknown syscall '{sc}' not in syscall_rules.yaml. "
-                f"Scored conservatively as Tier 2 (weight={unknown_weight:.2f}). "
-                f"Consider adding a rule entry to the YAML."
-            )
-        elif not explicitly_blocked and not permissive_default:
-            # Blocked by default, but still warn about unknown
-            warnings.append(
-                f"Unknown syscall '{sc}' not in syscall_rules.yaml. "
-                f"Currently blocked by defaultAction. "
-                f"Consider adding a rule entry to the YAML."
+                f"Unknown syscall '{sc}' not in rules. "
+                f"Scored conservatively as T2 (weight={unknown_weight:.2f})."
             )
 
-    # Cap scope resolution for elevated mode
-    scoring_mode = "default"
-    primary_scope: set[str] = set()
-    related_scope: set[str] = set()
-    if granted_caps:
-        scoring_mode = "elevated"
-        primary_scope, related_scope = get_scope_for_caps(granted_caps)
+    # Collect all bypass syscalls from combo rules so their states are resolved
+    combo_bypass_syscalls: set[str] = set()
+    for cr in combo_rules_data:
+        combo_bypass_syscalls.update(cr.get("bypasses", []))
+        combo_bypass_syscalls.update(cr.get("syscalls", []))
 
-    # Resolve effective states for all scored syscalls
-    states = resolve_effective_state(profile, frozenset(score_set))
+    # Resolve effective states for all scored syscalls + combo-relevant syscalls
+    score_set = all_dangerous | unknown_active
+    resolve_set = score_set | profile_syscalls | combo_bypass_syscalls
+    states = resolve_effective_states(profile, frozenset(resolve_set))
 
     # Analyze conditionals
-    conditionals = analyze_conditionals(profile)
+    conditional_findings = analyze_conditionals(profile)
 
-    # Evaluate combo rules (emergent risk from syscall combinations)
-    combo_findings = evaluate_combos(profile, states)
+    # Evaluate combo rules
+    combo_findings = evaluate_combos(profile, states, combo_rules_data)
 
-    # Build tier breakdown
-    tier_scores = {
-        "tier1": TierScore(tier=1, budget=TIER1_BUDGET, total_syscalls=len(TIER1)),
-        "tier2": TierScore(tier=2, budget=TIER2_BUDGET, total_syscalls=len(TIER2)),
-        "tier3": TierScore(tier=3, budget=TIER3_BUDGET, total_syscalls=len(TIER3)),
-    }
+    # Extract annotations
+    annotation_overrides, justifications = _extract_annotations(profile)
 
-    syscall_details: list[SyscallScore] = []
+    # Compute score
     total_deduction = 0.0
+    tier_findings: list[TierFinding] = []
+    tier_exposed: dict[int, int] = {1: 0, 2: 0, 3: 0}
 
-    # Score known dangerous syscalls
-    for sc in sorted(ALL_DANGEROUS_V2):
+    for sc in sorted(all_dangerous):
         state = states.get(sc, "blocked")
-        t = get_tier(sc)
-        if scoring_mode == "elevated":
-            if sc in primary_scope:
-                multiplier = _STATE_MULTIPLIER_INSCOPE_PRIMARY[state]
-            elif sc in related_scope:
-                multiplier = _STATE_MULTIPLIER_INSCOPE_RELATED[state]
-            else:
-                multiplier = _STATE_MULTIPLIER[state]
+        rule_data = syscall_rules.get(sc, {})
+        tier_num = rule_data.get("tier", 0)
+        weight = weights.get(sc, 0.0)
+
+        # T1 conditional is 0.75 in standard mode
+        if tier_num == 1 and state == "conditional":
+            mult = _T1_CONDITIONAL_MULT
         else:
-            # Default mode: Tier 1 conditional is more dangerous than 0.5x
-            if t == 1 and state == "conditional":
-                multiplier = _TIER1_CONDITIONAL_MULTIPLIER_DEFAULT
-            else:
-                multiplier = _STATE_MULTIPLIER[state]
-        weight = tier_weight(sc)
-        deduction = weight * multiplier
+            mult = _STATE_MULT.get(state, 0.0)
 
+        deduction = weight * mult
         total_deduction += deduction
 
-        # Update tier breakdown
-        tier_key = f"tier{t}"
-        if tier_key in tier_scores:
-            tier_scores[tier_key].deduction += deduction
-            if state == "allowed":
-                tier_scores[tier_key].allowed_count += 1
-            elif state == "conditional":
-                tier_scores[tier_key].conditional_count += 1
-            else:
-                tier_scores[tier_key].blocked_count += 1
+        if tier_num in tier_exposed and state != "blocked":
+            tier_exposed[tier_num] += 1
 
-        syscall_details.append(SyscallScore(
-            name=sc,
-            tier=t,
-            state=state,
-            weight=weight,
-            multiplier=multiplier,
-            deduction=deduction,
-        ))
+        # Build finding for exposed syscalls
+        if state != "blocked":
+            threats = rule_data.get("threats", [])
+            exploit_paths = [t.get("id", "") for t in threats if isinstance(t, dict)]
+            tier_findings.append(TierFinding(
+                syscall=sc,
+                tier=tier_num,
+                state=state,
+                weight=weight,
+                deduction=deduction,
+                description=rule_data.get("description", ""),
+                exploit_paths=exploit_paths,
+                justification=justifications.get(sc),
+            ))
 
-    # Score unknown syscalls that are active
-    for sc in sorted(active_unknowns):
+    # Score unknown active syscalls
+    for sc in sorted(unknown_active):
         state = states.get(sc, "blocked")
-        multiplier = _STATE_MULTIPLIER[state]
-        deduction = unknown_weight * multiplier
-
+        t2_budget = TIER_BUDGETS.get(2, 10.0)
+        t2_count = len(tiers.get(2, []))
+        unknown_weight = t2_budget / t2_count if t2_count else 0.0
+        mult = _STATE_MULT.get(state, 0.0)
+        deduction = unknown_weight * mult
         total_deduction += deduction
 
-        syscall_details.append(SyscallScore(
-            name=sc,
-            tier=0,
-            state=state,
-            weight=unknown_weight,
-            multiplier=multiplier,
-            deduction=deduction,
-            is_unknown=True,
-        ))
+        if state != "blocked":
+            tier_findings.append(TierFinding(
+                syscall=sc,
+                tier=0,
+                state=state,
+                weight=unknown_weight,
+                deduction=deduction,
+                description=f"Unknown syscall scored as T2 equivalent",
+                exploit_paths=[],
+            ))
 
-    # Compute final score
     raw_score = 100.0 - total_deduction
     score = max(0, min(100, round(raw_score)))
 
-    # Extract x-seccompute acknowledged T1 syscalls for grader forced-F override
-    x_seccompute_allow = set(profile.get("x-seccompute", {}).get("allow", []))
-    x_seccompute_acknowledged_t1 = sorted(x_seccompute_allow & set(TIER1))
+    # Grade and forced failure
+    forced_failure, ff_reasons = check_forced_failure(
+        tier1_members, states, annotation_overrides
+    )
+    grade = "F" if forced_failure else compute_grade(score)
 
-    metadata = {
-        "arch": arch,
-        "engine_version": ENGINE_VERSION,
-        "default_action": default_action,
-        "total_dangerous_syscalls": len(ALL_DANGEROUS_V2),
-        "unknown_syscalls_found": len(active_unknowns),
-        "scoring_mode": scoring_mode,
-        "granted_caps": granted_caps or [],
-        "x_seccompute_acknowledged_t1": x_seccompute_acknowledged_t1,
+    tier_summary = {
+        "t1_exposed": tier_exposed.get(1, 0),
+        "t2_exposed": tier_exposed.get(2, 0),
+        "t3_exposed": tier_exposed.get(3, 0),
     }
 
-    # Append combo findings as warnings so they surface in CLI output
-    for cf in combo_findings:
-        warnings.append(f"COMBO [{cf.severity}] {cf.summary}")
-
-    # Load intent from profile if not provided explicitly
-    if intent is None:
-        intent = load_intent(profile)
-
-    # Compute correctness score if intent is available
-    correctness_score = None
-    correctness_details: list[CorrectnessDetail] = []
-    if intent is not None:
-        correctness_score, correctness_details = compute_correctness(syscall_details, intent)
+    metadata: dict[str, Any] = {
+        "engine_version": ENGINE_VERSION,
+        "arch": arch,
+        "schema_version": SCHEMA_VERSION,
+        "rules_dir": rules_dir,
+    }
 
     return ScoringResult(
         score=score,
-        tier_breakdown=tier_scores,
-        syscall_details=syscall_details,
-        conditionals=conditionals,
+        grade=grade,
+        forced_failure=forced_failure,
+        forced_failure_reasons=ff_reasons,
+        annotation_overrides=sorted(annotation_overrides & set(tier1_members)),
+        scoring_mode="standard",
+        tier_summary=tier_summary,
+        tier_findings=tier_findings,
         combo_findings=combo_findings,
+        conditional_findings=conditional_findings,
         warnings=warnings,
         metadata=metadata,
-        granted_caps=granted_caps or [],
-        scoring_mode=scoring_mode,
-        correctness_score=correctness_score,
-        correctness_details=correctness_details,
-        intent=intent,
     )
