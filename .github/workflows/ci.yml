@@ -1,0 +1,341 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 1. Unit + integration tests (matrix)
+  # ──────────────────────────────────────────────
+  test:
+    name: pytest (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Unit + integration tests
+        run: pytest -q --tb=short
+
+  # ──────────────────────────────────────────────
+  # 2. End-to-end CLI smoke tests (single Python)
+  # ──────────────────────────────────────────────
+  e2e:
+    name: E2E CLI
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # ── helpers ─────────────────────────────────
+
+      - name: "E2E: deny-all profile scores 100 (A)"
+        run: |
+          RESULT=$(echo '{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}' \
+            | python -m seccompute - --format text)
+          echo "$RESULT"
+          echo "$RESULT" | grep -q "Score: 100"
+          echo "$RESULT" | grep -q "Grade: A"
+
+      - name: "E2E: allow-all profile scores 0 (F)"
+        run: |
+          RESULT=$(echo '{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[]}' \
+            | python -m seccompute - --format text)
+          echo "$RESULT"
+          echo "$RESULT" | grep -q "Score: 0"
+          echo "$RESULT" | grep -q "Grade: F"
+
+      - name: "E2E: JSON output is valid JSON"
+        run: |
+          echo '{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}' \
+            | python -m seccompute - --json \
+            | python -c "import sys,json; d=json.load(sys.stdin); assert d['score']==100"
+
+      - name: "E2E: schema_version and engine fields present"
+        run: |
+          echo '{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}' \
+            | python -m seccompute - --json \
+            | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['schema_version'] == '1.0', f'bad schema_version: {d[\"schema_version\"]}'
+          meta = d['metadata']
+          assert meta['engine_version'].startswith('3.'), f'bad engine_version: {meta[\"engine_version\"]}'
+          assert meta['arch'] == 'SCMP_ARCH_X86_64', f'bad arch: {meta[\"arch\"]}'
+          "
+
+      - name: "E2E: score example.json (file input)"
+        run: |
+          RESULT=$(python -m seccompute examples/example.json --format text)
+          echo "$RESULT"
+          echo "$RESULT" | grep -q "Score:"
+          echo "$RESULT" | grep -q "Grade:"
+
+      - name: "E2E: score YAML profile (profile3)"
+        run: |
+          RESULT=$(python -m seccompute \
+            examples/profile3-network-blocked-iouring-bypass.yaml --format text)
+          echo "$RESULT"
+          echo "$RESULT" | grep -q "Score:"
+
+      - name: "E2E: score YAML profile (profile5 ptrace conditional)"
+        run: |
+          RESULT=$(python -m seccompute \
+            examples/profile5-ptrace-conditional-pid-restriction.yaml --format text)
+          echo "$RESULT"
+          echo "$RESULT" | grep -q "Score:"
+
+      - name: "E2E: --min-score passes when score meets threshold (exit 0)"
+        run: |
+          echo '{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}' \
+            | python -m seccompute - --min-score 100
+          echo "exit $? (expected 0)"
+
+      - name: "E2E: --min-score fails when score is below threshold (exit 2)"
+        run: |
+          echo '{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[]}' \
+            | python -m seccompute - --min-score 50 ; RC=$?
+          [ "$RC" -eq 2 ] || (echo "Expected exit 2, got $RC" && exit 1)
+
+      - name: "E2E: --compare-docker output contains comparison block"
+        run: |
+          RESULT=$(python -m seccompute examples/example.json \
+            --compare-docker --format text)
+          echo "$RESULT"
+          echo "$RESULT" | grep -qE "(More restrictive|Less restrictive|Docker default)"
+
+      - name: "E2E: --grade output renders grade header"
+        run: |
+          RESULT=$(echo '{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}' \
+            | python -m seccompute - --grade --format text)
+          echo "$RESULT"
+          echo "$RESULT" | grep -qi "grade"
+
+      - name: "E2E: T1 unconditional syscall triggers forced_failure"
+        run: |
+          PROFILE=$(python -c "
+          import json
+          print(json.dumps({
+            'defaultAction': 'SCMP_ACT_ERRNO',
+            'syscalls': [{'names': ['ptrace'], 'action': 'SCMP_ACT_ALLOW'}]
+          }))
+          ")
+          echo "$PROFILE" | python -m seccompute - --json \
+            | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['grade'] == 'F', f'Expected F, got {d[\"grade\"]}'
+          assert d['forced_failure'] is True, 'forced_failure should be True'
+          "
+
+      - name: "E2E: T1 conditional syscall does NOT trigger forced_failure"
+        run: |
+          PROFILE=$(python -c "
+          import json
+          print(json.dumps({
+            'defaultAction': 'SCMP_ACT_ERRNO',
+            'syscalls': [{
+              'names': ['ptrace'],
+              'action': 'SCMP_ACT_ALLOW',
+              'args': [{'index': 0, 'op': 'SCMP_CMP_EQ', 'value': 1}]
+            }]
+          }))
+          ")
+          echo "$PROFILE" | python -m seccompute - --json \
+            | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['forced_failure'] is False, f'forced_failure should be False, got {d}'
+          "
+
+      - name: "E2E: io_uring combo detection fires"
+        run: |
+          python -m seccompute \
+            examples/profile3-network-blocked-iouring-bypass.yaml --json \
+            | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          combos = [c['name'] for c in d.get('combo_findings', [])]
+          assert any('io_uring' in c.lower() for c in combos), \
+            f'Expected io_uring combo, got: {combos}'
+          "
+
+      - name: "E2E: missing file returns exit 1"
+        run: |
+          python -m seccompute /nonexistent/profile.json 2>/dev/null ; RC=$?
+          [ "$RC" -eq 1 ] || (echo "Expected exit 1, got $RC" && exit 1)
+
+      - name: "E2E: invalid JSON returns exit 1"
+        run: |
+          echo 'this is not json' | python -m seccompute - 2>/dev/null ; RC=$?
+          [ "$RC" -eq 1 ] || (echo "Expected exit 1, got $RC" && exit 1)
+
+      - name: "E2E: --arch flag accepted"
+        run: |
+          echo '{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}' \
+            | python -m seccompute - --arch SCMP_ARCH_AARCH64 --json \
+            | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['metadata']['arch'] == 'SCMP_ARCH_AARCH64', f'Wrong arch: {d[\"metadata\"][\"arch\"]}'
+          "
+
+      - name: "E2E: verbose flag writes to stderr without breaking stdout JSON"
+        run: |
+          JSON=$(echo '{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}' \
+            | python -m seccompute - --verbose --json 2>/dev/null)
+          echo "$JSON" | python -c "import sys,json; json.load(sys.stdin)"
+
+      - name: "E2E: Kubernetes CRD YAML profile accepted"
+        run: |
+          PROFILE=$(python -c "
+          import json
+          print(json.dumps({
+            'apiVersion': 'security-profiles-operator.x-k8s.io/v1beta1',
+            'kind': 'SeccompProfile',
+            'metadata': {'name': 'test'},
+            'spec': {
+              'defaultAction': 'SCMP_ACT_ERRNO',
+              'syscalls': []
+            }
+          }))
+          ")
+          echo "$PROFILE" | python -m seccompute - --json \
+            | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['score'] == 100
+          "
+
+  # ──────────────────────────────────────────────
+  # 3. Python API contract test
+  # ──────────────────────────────────────────────
+  api-contract:
+    name: Python API contract
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: API contract assertions
+        run: |
+          python - << 'PYEOF'
+          from seccompute import score_profile, ScoringResult
+
+          # deny-all → 100
+          r = score_profile({"defaultAction": "SCMP_ACT_ERRNO", "syscalls": []})
+          assert isinstance(r, ScoringResult), "return type"
+          assert r.score == 100, f"deny-all score={r.score}"
+          assert r.grade == "A", f"deny-all grade={r.grade}"
+          assert r.forced_failure is False
+
+          # allow-all → 0
+          r = score_profile({"defaultAction": "SCMP_ACT_ALLOW", "syscalls": []})
+          assert r.score == 0, f"allow-all score={r.score}"
+          assert r.grade == "F"
+
+          # score is int in [0, 100]
+          assert isinstance(r.score, int), "score must be int"
+          assert 0 <= r.score <= 100
+
+          # JSON serialisation round-trips
+          import json
+          j = json.loads(r.to_json())
+          assert j["schema_version"] == "1.0"
+          assert j["score"] == r.score
+          assert j["grade"] == r.grade
+
+          # T1 unconditional → forced_failure
+          r = score_profile({
+              "defaultAction": "SCMP_ACT_ERRNO",
+              "syscalls": [{"names": ["bpf"], "action": "SCMP_ACT_ALLOW"}],
+          })
+          assert r.forced_failure is True, "bpf unconditional should force F"
+          assert r.grade == "F"
+
+          # arch override
+          r = score_profile(
+              {"defaultAction": "SCMP_ACT_ERRNO", "syscalls": []},
+              arch="SCMP_ARCH_AARCH64"
+          )
+          assert r.metadata["arch"] == "SCMP_ARCH_AARCH64", f"arch={r.metadata}"
+
+          print("All API contract assertions passed.")
+          PYEOF
+
+  # ──────────────────────────────────────────────
+  # 4. Lint + type-check
+  # ──────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install linters
+        run: pip install ruff
+
+      - name: ruff check
+        run: ruff check seccompute/ tests/
+
+  # ──────────────────────────────────────────────
+  # 5. Required status check gate (all must pass)
+  # ──────────────────────────────────────────────
+  all-checks:
+    name: All checks passed
+    runs-on: ubuntu-latest
+    needs: [test, e2e, api-contract, lint]
+    if: always()
+    steps:
+      - name: Verify all jobs succeeded
+        run: |
+          if [[ "${{ needs.test.result }}"         != "success" ||
+                "${{ needs.e2e.result }}"           != "success" ||
+                "${{ needs.api-contract.result }}"  != "success" ||
+                "${{ needs.lint.result }}"          != "success" ]]; then
+            echo "One or more required checks failed."
+            echo "  test:         ${{ needs.test.result }}"
+            echo "  e2e:          ${{ needs.e2e.result }}"
+            echo "  api-contract: ${{ needs.api-contract.result }}"
+            echo "  lint:         ${{ needs.lint.result }}"
+            exit 1
+          fi
+          echo "All checks passed."

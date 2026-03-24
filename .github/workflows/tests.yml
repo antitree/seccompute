@@ -1,18 +1,13 @@
-name: Tests
+# Superseded by ci.yml — kept as a no-op so existing branch protection
+# rules that reference "Tests / test" don't break until they're updated.
+name: Tests (legacy)
 on:
   pull_request:
   push:
     branches: [main]
 jobs:
-  test:
+  redirect:
+    name: "See ci.yml"
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
-      - run: pytest -q
+      - run: echo "This workflow is superseded by ci.yml"
