@@ -123,19 +123,19 @@ class TestConditionalScoring:
         ]))
         assert r_cap_gated.score == r_no_rule.score
 
-    def test_t1_conditional_uses_075_multiplier(self):
-        """T1 cap-gated with cap granted uses 1.0x multiplier (full weight)."""
+    def test_t1_conditional_uses_05_multiplier(self):
+        """Arg-filtered T1 uses 0.5x multiplier (conditional state)."""
         from seccompute.tiers import build_tiers, TIER_BUDGETS
         from seccompute.rules import load_all_rules
         rules = load_all_rules()
         tiers = build_tiers(rules["syscalls"])
         t1 = tiers[1]
         weight = TIER_BUDGETS[1] / len(t1)
-        expected = round(100 - weight * 1.0)
+        expected = round(100 - weight * 0.5)
 
         result = score_profile(make_profile(rules=[
-            allow_rule("bpf", includes={"caps": ["CAP_BPF"]}),
-        ]), granted_caps=frozenset({"CAP_BPF"}))
+            allow_rule("bpf", args=[{"index": 0, "value": 0, "op": "SCMP_CMP_EQ"}]),
+        ]))
         assert result.score == expected
 
 

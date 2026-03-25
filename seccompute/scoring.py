@@ -187,9 +187,6 @@ _STATE_MULT: dict[str, float] = {
     "allowed": 1.0,
 }
 
-# T1 conditional is more dangerous in standard mode
-_T1_CONDITIONAL_MULT = 0.75
-
 
 def _extract_annotations(profile: dict) -> tuple[set[str], dict[str, str]]:
     """Extract x-seccompute annotation overrides.
@@ -326,11 +323,7 @@ def score_profile(
         tier_num = rule_data.get("tier", 0)
         weight = weights.get(sc, 0.0)
 
-        # T1 conditional is 0.75 in standard mode
-        if tier_num == 1 and state == "conditional":
-            mult = _T1_CONDITIONAL_MULT
-        else:
-            mult = _STATE_MULT.get(state, 0.0)
+        mult = _STATE_MULT.get(state, 0.0)
 
         deduction = weight * mult
         total_deduction += deduction
