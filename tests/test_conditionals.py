@@ -11,12 +11,21 @@ class TestEffectiveStateResolution:
         states = resolve_effective_states(p, frozenset(["bpf"]))
         assert states["bpf"] == "allowed"
 
-    def test_conditional_allow_with_caps(self):
+    def test_conditional_allow_with_caps_no_context(self):
+        """Cap-gated allow with no caps context is ignored — falls to default (blocked)."""
         p = make_profile(rules=[
             allow_rule("bpf", includes={"caps": ["CAP_BPF"]}),
         ])
-        states = resolve_effective_states(p, frozenset(["bpf"]))
-        assert states["bpf"] == "conditional"
+        states = resolve_effective_states(p, frozenset(["bpf"]), granted_caps=None)
+        assert states["bpf"] == "blocked"
+
+    def test_conditional_allow_with_caps_granted(self):
+        """Cap-gated allow with cap granted resolves to allowed."""
+        p = make_profile(rules=[
+            allow_rule("bpf", includes={"caps": ["CAP_BPF"]}),
+        ])
+        states = resolve_effective_states(p, frozenset(["bpf"]), granted_caps=frozenset({"CAP_BPF"}))
+        assert states["bpf"] == "allowed"
 
     def test_conditional_allow_with_args(self):
         p = make_profile(rules=[

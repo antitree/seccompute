@@ -230,6 +230,7 @@ def score_profile(
     *,
     arch: str = "SCMP_ARCH_X86_64",
     rules_dir: str | None = None,
+    granted_caps: frozenset[str] | None = None,
 ) -> ScoringResult:
     """Score a seccomp profile on a 0-100 hardening scale.
 
@@ -303,10 +304,10 @@ def score_profile(
     # Resolve effective states for all scored syscalls + combo-relevant syscalls
     score_set = all_dangerous | unknown_active
     resolve_set = score_set | profile_syscalls | combo_bypass_syscalls
-    states = resolve_effective_states(profile, frozenset(resolve_set))
+    states = resolve_effective_states(profile, frozenset(resolve_set), granted_caps=granted_caps)
 
     # Analyze conditionals
-    conditional_findings = analyze_conditionals(profile)
+    conditional_findings = analyze_conditionals(profile, granted_caps=granted_caps)
 
     # Evaluate combo rules
     combo_findings = evaluate_combos(profile, states, combo_rules_data)
@@ -393,6 +394,7 @@ def score_profile(
         "arch": arch,
         "schema_version": SCHEMA_VERSION,
         "rules_dir": rules_dir,
+        "granted_caps": sorted(granted_caps) if granted_caps is not None else None,
     }
 
     return ScoringResult(

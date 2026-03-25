@@ -31,7 +31,7 @@ def _get_excludes(rule: dict) -> dict:
     return exc if isinstance(exc, dict) else {}
 
 
-def analyze_conditionals(profile: dict) -> list[ConditionalFinding]:
+def analyze_conditionals(profile: dict, *, granted_caps: frozenset[str] | None = None) -> list[ConditionalFinding]:
     """Analyze all conditional rules in a profile.
 
     Returns ConditionalFinding entries for rules with conditions.
@@ -60,11 +60,16 @@ def analyze_conditionals(profile: dict) -> list[ConditionalFinding]:
             if action in _PERMISSIVE:
                 if has_cap_include:
                     caps = includes["caps"]
+                    if granted_caps is None:
+                        resolved = None
+                    else:
+                        resolved = all(c in granted_caps for c in caps)
                     findings.append(ConditionalFinding(
                         syscall=name,
                         condition_type="capability_gate",
                         details=f"Allowed only with capabilities: {', '.join(caps)}",
                         rule_action=action,
+                        resolved=resolved,
                     ))
                 elif has_min_kernel:
                     kernel = includes["minKernel"]
@@ -105,6 +110,7 @@ def analyze_conditionals(profile: dict) -> list[ConditionalFinding]:
 def resolve_effective_states(
     profile: dict,
     syscall_set: frozenset[str],
+    granted_caps: frozenset[str] | None = None,
 ) -> dict[str, str]:
     """Compute effective state for each syscall in syscall_set.
 
@@ -136,6 +142,8 @@ def resolve_effective_states(
             or includes.get("arches") or has_cap_exclude
         )
 
+        has_cap_include = bool(includes.get("caps"))
+
         if not has_condition:
             if action in _BLOCKING:
                 unconditional_block.update(names)
@@ -147,7 +155,19 @@ def resolve_effective_states(
                     conditional_allow.update(names)
                 # else: arg-filtered deny tightens block
             elif action in _PERMISSIVE:
-                conditional_allow.update(names)
+                if has_cap_include:
+                    # Cap-gated allow: resolution depends on granted_caps context
+                    if granted_caps is None:
+                        # No caps context — ignore this rule entirely (fall through to default)
+                        pass
+                    elif frozenset(includes["caps"]).issubset(granted_caps):
+                        # All required caps are granted — treat as unconditional allow
+                        unconditional_allow.update(names)
+                    else:
+                        # Required cap(s) not granted — treat as unconditional block
+                        unconditional_block.update(names)
+                else:
+                    conditional_allow.update(names)
 
     states: dict[str, str] = {}
     for sc in syscall_set:

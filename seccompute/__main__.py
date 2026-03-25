@@ -96,6 +96,20 @@ _DOCKER_DEFAULT_ALLOWED: frozenset[str] = frozenset([
 ])
 
 
+def _parse_caps(raw: str | None) -> "frozenset[str] | None":
+    """Parse --caps argument into a frozenset of normalized cap names.
+
+    Returns None if raw is None (flag not provided — no caps context).
+    Returns frozenset() if raw is empty string (explicit zero caps granted).
+    Returns frozenset of uppercased cap names otherwise.
+    """
+    if raw is None:
+        return None
+    if not raw.strip():
+        return frozenset()
+    return frozenset(c.strip().upper() for c in raw.split(",") if c.strip())
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="seccompute",
@@ -107,6 +121,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-score", type=int, default=None, metavar="N", help="Exit 2 if score is below N (for CI gates)")
     parser.add_argument("--compare-docker", action="store_true", help="Compare profile against Docker/Moby default seccomp allowlist and show delta")
     parser.add_argument("--rules", default=None, metavar="DIR", help="Directory containing custom rule files (syscall_rules.yaml, combo_rules.yaml, conditional_rules.yaml); falls back to built-ins for any file not present")
+    parser.add_argument(
+        "--caps",
+        default=None,
+        metavar="CAPS",
+        help=(
+            "Comma-separated capabilities granted to the container "
+            "(e.g. CAP_BPF,CAP_SYS_ADMIN). When provided, capability-conditional "
+            "rules are resolved against this set. Use empty string to specify "
+            "no capabilities. When omitted, cap conditionals are ignored entirely "
+            "so Docker and containerd profiles score equivalently."
+        ),
+    )
 
     output = parser.add_argument_group("output")
     output.add_argument("--grade", action="store_true", help="Show letter-grade visualization (ANSI color)")
@@ -293,7 +319,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         rules_dir = str(rules_path)
 
-    result = score_profile(profile, arch=args.arch, rules_dir=rules_dir)
+    granted_caps = _parse_caps(args.caps)
+    result = score_profile(profile, arch=args.arch, rules_dir=rules_dir, granted_caps=granted_caps)
 
     # Merge validation warnings into the result's warning list so they
     # appear in both JSON and text output without requiring a separate channel.

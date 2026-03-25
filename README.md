@@ -44,6 +44,12 @@ input / modes:
   --min-score N     Exit 2 if score is below N (for CI gates)
   --compare-docker  Compare profile against Docker/Moby default seccomp allowlist
   --rules DIR       Directory with custom rule files; missing files fall back to built-ins
+  --caps CAPS       Comma-separated capabilities granted to the container
+                    (e.g. CAP_BPF,CAP_SYS_ADMIN). When provided, capability-
+                    conditional rules are resolved against this set. Use empty
+                    string to specify no capabilities. When omitted, capability
+                    conditionals are ignored so Docker and containerd profiles
+                    score equivalently.
 
 output:
   --grade           Show letter-grade visualization (ANSI color)

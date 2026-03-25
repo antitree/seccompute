@@ -104,27 +104,38 @@ class TestTierBudgets:
 
 class TestConditionalScoring:
     def test_conditional_between_blocked_and_allowed(self):
-        """Conditional score is between fully blocked and fully allowed."""
+        """Cap-gated allow with cap granted scores between fully blocked and fully allowed.
+        (arg-filter conditionals still use 0.5x multiplier)"""
         r_blocked = score_profile(make_profile())
         r_allowed = score_profile(make_profile(rules=[allow_rule("bpf")]))
         r_cond = score_profile(make_profile(rules=[
             allow_rule("bpf", includes={"caps": ["CAP_BPF"]}),
+        ]), granted_caps=frozenset({"CAP_BPF"}))
+        # With cap granted, cap-gated == unconditional allow, so scores equal
+        assert r_allowed.score == r_cond.score
+        assert r_cond.score < r_blocked.score
+
+    def test_cap_gated_no_caps_context_scores_same_as_blocked(self):
+        """Cap-gated allow with no caps context is ignored — scores same as no rule."""
+        r_no_rule = score_profile(make_profile())
+        r_cap_gated = score_profile(make_profile(rules=[
+            allow_rule("bpf", includes={"caps": ["CAP_BPF"]}),
         ]))
-        assert r_allowed.score < r_cond.score < r_blocked.score
+        assert r_cap_gated.score == r_no_rule.score
 
     def test_t1_conditional_uses_075_multiplier(self):
-        """T1 conditional uses 0.75x multiplier (not 0.5x)."""
+        """T1 cap-gated with cap granted uses 1.0x multiplier (full weight)."""
         from seccompute.tiers import build_tiers, TIER_BUDGETS
         from seccompute.rules import load_all_rules
         rules = load_all_rules()
         tiers = build_tiers(rules["syscalls"])
         t1 = tiers[1]
         weight = TIER_BUDGETS[1] / len(t1)
-        expected = round(100 - weight * 0.75)
+        expected = round(100 - weight * 1.0)
 
         result = score_profile(make_profile(rules=[
             allow_rule("bpf", includes={"caps": ["CAP_BPF"]}),
-        ]))
+        ]), granted_caps=frozenset({"CAP_BPF"}))
         assert result.score == expected
 
 

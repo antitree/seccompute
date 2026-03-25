@@ -44,6 +44,7 @@ class ConditionalFinding:
     condition_type: str  # capability_gate, argument_filter, etc.
     details: str
     rule_action: str
+    resolved: bool | None = None  # None=no caps context, True=granted, False=not granted
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ class ScoringResult:
                     "condition_type": c.condition_type,
                     "details": c.details,
                     "rule_action": c.rule_action,
+                    "resolved": c.resolved,
                 }
                 for c in self.conditional_findings
             ],
