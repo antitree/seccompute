@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seccompute"
-version = "3.0.4"
+version = "3.0.5"
 description = "Seccomp profile hardening score engine"
 readme = "README.md"
 requires-python = ">=3.9"
