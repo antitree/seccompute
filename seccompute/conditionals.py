@@ -163,9 +163,9 @@ def resolve_effective_states(
                     elif frozenset(includes["caps"]).issubset(granted_caps):
                         # All required caps are granted — treat as unconditional allow
                         unconditional_allow.update(names)
-                    else:
-                        # Required cap(s) not granted — treat as unconditional block
-                        unconditional_block.update(names)
+                    # else: required cap(s) not granted — fall through to default action
+                    # (do NOT move to unconditional_block: that would incorrectly override the
+                    # default for syscalls whose rule requires a *different* cap than what was granted)
                 else:
                     conditional_allow.update(names)
 
