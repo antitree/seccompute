@@ -134,6 +134,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument("--dump-rules", action="store_true", help="Dump dangerous syscall rules as JSON and exit (no profile needed)")
+
     output = parser.add_argument_group("output")
     output.add_argument("--grade", action="store_true", help="Show letter-grade visualization (ANSI color)")
     output.add_argument("--format", choices=["json", "text"], default="json", help="Output format (default: json)")
@@ -256,6 +258,11 @@ def _print_docker_comparison(profile: dict, result) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+
+    if args.dump_rules:
+        from . import get_dangerous_syscalls
+        print(json.dumps(get_dangerous_syscalls(), indent=2))
+        return 0
 
     if args.profile == "-":
         # Read from stdin
